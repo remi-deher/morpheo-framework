@@ -5,7 +5,7 @@ namespace Morpheo.Core.Data;
 
 public class MorpheoDbContext : DbContext
 {
-    private readonly MorpheoOptions _options;
+    private readonly MorpheoOptions? _options;
 
     // Table interne du Framework (ex: File d'attente d'impression, Logs de sync)
     // Le développeur n'a pas à s'en soucier, c'est géré par nous.
@@ -34,7 +34,7 @@ public class MorpheoDbContext : DbContext
 // Exemple d'une table interne technique pour Morpheo
 public class SyncLog : MorpheoEntity
 {
-    public string Action { get; set; } // "UPDATE", "DELETE"
-    public string EntityName { get; set; }
-    public string SyncedWithNodeId { get; set; }
+    public string Action { get; set; } = string.Empty;
+    public string EntityName { get; set; } = string.Empty;
+    public string SyncedWithNodeId { get; set; } = string.Empty;
 }

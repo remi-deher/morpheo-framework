@@ -1,5 +1,8 @@
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection; // Important pour IServiceProvider
 using Microsoft.Extensions.Logging;
 using Morpheo.Abstractions;
+using Morpheo.Core.Data;
 
 namespace Morpheo.Core;
 
@@ -7,43 +10,66 @@ public class MorpheoNode : IMorpheoNode
 {
     private readonly MorpheoOptions _options;
     private readonly INetworkDiscovery _discovery;
-    private readonly IPrintGateway _printGateway;
+    private readonly IServiceProvider _serviceProvider; // Pour récupérer la BDD dynamiquement
     private readonly ILogger<MorpheoNode> _logger;
 
-    // L'injection de d�pendances nous fournit les impl�mentations concr�tes
     public MorpheoNode(
         MorpheoOptions options,
         INetworkDiscovery discovery,
-        IPrintGateway printGateway,
+        IServiceProvider serviceProvider,
         ILogger<MorpheoNode> logger)
     {
         _options = options;
         _discovery = discovery;
-        _printGateway = printGateway;
+        _serviceProvider = serviceProvider;
         _logger = logger;
     }
 
     public async Task StartAsync(CancellationToken ct = default)
     {
-        _logger.LogInformation($"?? D�marrage de Morpheo Node : {_options.NodeName}");
+        _logger.LogInformation($"🚀 Démarrage de Morpheo Node : {_options.NodeName}");
 
-        // 1. Initialiser la BDD locale (SQLite)
-        // TODO: Init Database logic here...
+        // --- ÉTAPE 1 : Initialisation de la Base de Données ---
+        try
+        {
+            // On crée un scope car le DbContext est souvent "Scoped" (durée de vie courte)
+            using (var scope = _serviceProvider.CreateScope())
+            {
+                var initializer = scope.ServiceProvider.GetRequiredService<DatabaseInitializer>();
 
-        // 2. Lancer la d�couverte r�seau
-        var myIdentity = new PeerInfo(Guid.NewGuid().ToString(), _options.NodeName, "127.0.0.1", _options.Role);
+                // On récupère le DbContext générique (peu importe son type réel AppDbContext, etc.)
+                // Note : On cherche n'importe quel contexte qui hérite de MorpheoDbContext
+                var dbContext = scope.ServiceProvider.GetServices<MorpheoDbContext>().FirstOrDefault()
+                                ?? throw new Exception("Aucun DbContext Morpheo n'a été enregistré !");
 
-        // On s'abonne aux �v�nements
-        _discovery.PeerFound += (s, peer) => _logger.LogInformation($"Voisin trouv� : {peer.Name}");
+                await initializer.InitializeAsync(dbContext);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCritical(ex, "❌ Impossible d'initialiser la base de données. Arrêt d'urgence.");
+            throw; // Si pas de BDD, le système ne doit pas démarrer.
+        }
 
+        // --- ÉTAPE 2 : Lancer la découverte réseau ---
+        var myIdentity = new PeerInfo(Guid.NewGuid().ToString(), _options.NodeName, "IP_AUTO", _options.Role);
+
+        // Abonnement aux logs
+        _discovery.PeerFound += (s, peer) => _logger.LogInformation($"✨ Voisin trouvé : {peer.Name} ({peer.IpAddress})");
+        _discovery.PeerLost += (s, peer) => _logger.LogWarning($"💀 Voisin perdu : {peer.Name}");
+
+        // Démarrage UDP
         await _discovery.StartAdvertisingAsync(myIdentity, ct);
 
-        _logger.LogInformation("? Morpheo est op�rationnel et en �coute.");
+        _logger.LogInformation("✅ Morpheo est opérationnel et en écoute.");
     }
 
     public async Task StopAsync()
     {
-        // Logique de fermeture propre
-        _logger.LogInformation("Arr�t du n�ud Morpheo.");
+        _logger.LogInformation("Arrêt du nœud Morpheo.");
+        // Ici on pourrait ajouter la logique pour envoyer un message "Bye" en UDP
     }
+
+    // Accesseurs pour les couches supérieures (WinUI/Android pourront s'en servir)
+    public INetworkDiscovery Discovery => _discovery;
 }
