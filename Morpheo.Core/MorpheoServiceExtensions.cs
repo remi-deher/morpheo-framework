@@ -1,9 +1,10 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Morpheo.Abstractions;
-using Morpheo.Core.Client; // Pour MorpheoHttpClient
-using Morpheo.Core.Data;   // Pour DatabaseInitializer
+using Morpheo.Core.Client;    // Pour MorpheoHttpClient
+using Morpheo.Core.Data;      // Pour DatabaseInitializer
 using Morpheo.Core.Discovery; // Pour UdpDiscoveryService
+using Morpheo.Core.Printers;  // Pour WindowsPrinterService
 
 namespace Morpheo.Core;
 
@@ -33,7 +34,11 @@ public static class MorpheoServiceExtensions
         services.AddHttpClient(); // Active IHttpClientFactory
         services.AddSingleton<IMorpheoClient, MorpheoHttpClient>();
 
-        // --- 4. Configuration de la Base de Données (SQLite) ---
+        // --- 4. Service d'Imprimantes (NOUVEAU) ---
+        // Permet de scanner les imprimantes Windows locales
+        services.AddSingleton<WindowsPrinterService>();
+
+        // --- 5. Configuration de la Base de Données (SQLite) ---
 
         // Service qui calcule le chemin du fichier .db selon l'OS
         services.AddSingleton<DatabaseInitializer>();

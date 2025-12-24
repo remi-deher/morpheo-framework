@@ -20,14 +20,21 @@ builder.Logging.SetMinimumLevel(LogLevel.Information);
 builder.Services.AddMorpheo<TestDbContext>(options =>
 {
     // Nom aléatoire pour identifier facilement les fenêtres
-    options.NodeName = "TEST_PC_" + Random.Shared.Next(100, 999);
+    options.NodeName = "CAISSE_" + Random.Shared.Next(100, 999);
     options.Role = NodeRole.StandardClient;
     options.DiscoveryPort = 5555;
 
-    // Capabilities pour tester
+    // --- Configuration des Imprimantes ---
+    options.Printers
+        // 1. On exclut les imprimantes virtuelles ou indésirables
+        .Exclude("Microsoft.*")       // PDF, XPS...
+        .Exclude("OneNote.*")         // OneNote
+        .Exclude("Fax")
+        .Exclude(".*Ordonnance.*")    // <--- Cas spécifique demandé (Bloquer les imprimantes mixtes)
 
-    options.Capabilities.Add("PRINTER:ZEBRA");
-    options.Capabilities.Add("SCANNER:BARCODE");
+        // 2. On regroupe les imprimantes valides par fonction
+        .DefineGroup("KITCHEN", ".*Zebra.*")   // Tout ce qui contient "Zebra" va en Cuisine
+        .DefineGroup("RECEIPT", ".*Epson.*");  // Tout ce qui contient "Epson" est un ticket
 });
 
 var host = builder.Build();
@@ -80,22 +87,24 @@ while (true)
         {
             if (neighbors.Count == 0)
             {
-                Console.WriteLine("⚠️ Aucun voisin détecté pour le moment. Attendez qu'un autre nœud apparaisse.");
+                Console.WriteLine("⚠️ Aucun voisin détecté pour le moment.");
             }
             else
             {
-                // On prend le premier voisin de la liste
+                // On prend le premier voisin
                 var target = neighbors.First();
 
-                Console.WriteLine($"\n📤 Envoi d'une demande d'impression vers {target.Name} (Port: {target.Port})...");
+                Console.WriteLine($"\n📤 Envoi d'une demande d'impression vers {target.Name}...");
 
-                // Utilisation du CLIENT HTTP injecté dans le nœud
-                await node.Client.SendPrintJobAsync(target, "Hello from Morpheo Mesh! Il est " + DateTime.Now.ToLongTimeString());
+                // On pourrait choisir ici une imprimante spécifique grâce aux Tags
+                // var printerTarget = neighbors.FirstOrDefault(n => n.Tags.Any(t => t.Contains("KITCHEN")));
+
+                await node.Client.SendPrintJobAsync(target, "Hello from Morpheo! " + DateTime.Now.ToLongTimeString());
             }
         }
     }
 
-    // Petite pause pour ne pas surcharger le processeur dans la boucle while
+    // Petite pause pour ne pas surcharger le CPU
     await Task.Delay(100);
 }
 

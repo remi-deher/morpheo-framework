@@ -1,8 +1,10 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Morpheo.Abstractions;
-using Morpheo.Core.Data;
-using Morpheo.Core.Server;
+using Morpheo.Core.Client; // Pour IMorpheoClient
+using Morpheo.Core.Data;   // Pour DatabaseInitializer
+using Morpheo.Core.Printers; // Pour WindowsPrinterService
+using Morpheo.Core.Server; // Pour MorpheoWebServer
 
 namespace Morpheo.Core;
 
@@ -13,8 +15,10 @@ public class MorpheoNode : IMorpheoNode
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<MorpheoNode> _logger;
     private readonly MorpheoWebServer _webServer;
-
     private readonly IMorpheoClient _client;
+
+    // NOUVEAU : Le service qui scanne les imprimantes Windows
+    private readonly WindowsPrinterService _printerService;
 
     // On garde une trace de la tâche de fond pour info
     private Task? _discoveryTask;
@@ -25,16 +29,17 @@ public class MorpheoNode : IMorpheoNode
         IServiceProvider serviceProvider,
         ILogger<MorpheoNode> logger,
         ILoggerFactory loggerFactory,
-        IMorpheoClient client)
+        IMorpheoClient client,
+        WindowsPrinterService printerService) // <--- Injection ici
     {
         _options = options;
         _discovery = discovery;
         _serviceProvider = serviceProvider;
         _logger = logger;
         _client = client;
+        _printerService = printerService; // <--- On stocke le service
 
-        // MODIFICATION : On passe 'discovery' au constructeur du WebServer 
-        // pour qu'il puisse afficher la liste des pairs sur le Dashboard.
+        // On passe 'discovery' au constructeur du WebServer pour le Dashboard
         _webServer = new MorpheoWebServer(options, loggerFactory.CreateLogger<MorpheoWebServer>(), discovery);
     }
 
@@ -66,25 +71,46 @@ public class MorpheoNode : IMorpheoNode
         await _webServer.StartAsync(ct);
         int myHttpPort = _webServer.LocalPort;
 
-        // --- 3. Découverte Réseau ---
+        // --- 3. Découverte Réseau & Capacités ---
 
-        // Construction de l'identité avec les Tags (Capabilities)
+        // A. On prépare la liste des capacités (Capabilities)
+        var finalCapabilities = new List<string>(_options.Capabilities);
+
+        // B. On scanne les imprimantes réelles et on les ajoute
+        try
+        {
+            _logger.LogInformation("🔍 Scan des imprimantes locales...");
+            var localPrinters = _printerService.GetAvailablePrinters();
+            foreach (var p in localPrinters)
+            {
+                // Format du Tag : "PRINTER:{Groupe}:{Nom}"
+                // Exemple : "PRINTER:KITCHEN:Zebra_GK420t"
+                string tag = $"PRINTER:{p.Group}:{p.Name}";
+                finalCapabilities.Add(tag);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "⚠️ Erreur lors du scan des imprimantes (Fonctionnalité désactivée).");
+        }
+
+        // C. On construit l'identité avec la liste complète
         var myIdentity = new PeerInfo(
             Guid.NewGuid().ToString(),
             _options.NodeName,
             "IP_AUTO",
             myHttpPort,
             _options.Role,
-            _options.Capabilities.ToArray() // <--- AJOUT : On convertit la liste d'options en tableau
+            finalCapabilities.ToArray() // <--- Liste fusionnée (Config + Auto-Scan)
         );
 
         _discovery.PeerFound += (s, peer) => _logger.LogInformation($"✨ Voisin trouvé : {peer.Name} ({peer.IpAddress}:{peer.Port})");
         _discovery.PeerLost += (s, peer) => _logger.LogWarning($"💀 Voisin perdu : {peer.Name}");
 
-        // Lancement en tâche de fond (Non-bloquant)
+        // D. Lancement en tâche de fond (Non-bloquant)
         _discoveryTask = _discovery.StartAdvertisingAsync(myIdentity, ct);
 
-        _logger.LogInformation("✅ Morpheo est opérationnel (UDP + HTTP + CLIENT).");
+        _logger.LogInformation("✅ Morpheo est opérationnel (UDP + HTTP + CLIENT + PRINTERS).");
     }
 
     public async Task StopAsync()
