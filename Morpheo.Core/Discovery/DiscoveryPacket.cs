@@ -5,8 +5,8 @@ namespace Morpheo.Core.Discovery;
 
 public enum DiscoveryMessageType
 {
-    Hello,  // Alive
-    Bye     // Graceful shutdown
+    Hello,
+    Bye
 }
 
 public class DiscoveryPacket
@@ -20,13 +20,17 @@ public class DiscoveryPacket
     [JsonPropertyName("ip")]
     public string IpAddress { get; set; } = string.Empty;
 
+    // --- NOUVEAU : On ajoute le port ici ---
+    [JsonPropertyName("p")]
+    public int Port { get; set; }
+    // ---------------------------------------
+
     [JsonPropertyName("r")]
     public NodeRole Role { get; set; }
 
     [JsonPropertyName("t")]
     public DiscoveryMessageType Type { get; set; } = DiscoveryMessageType.Hello;
 
-    // Pour la sérialisation rapide
     public static byte[] Serialize(DiscoveryPacket packet)
         => System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(packet);
 

@@ -1,7 +1,5 @@
 namespace Morpheo.Abstractions;
 
-public record PeerInfo(string Id, string Name, string IpAddress, NodeRole Role);
-
 public interface INetworkDiscovery
 {
     // Démarre l'écoute et l'annonce sur le réseau

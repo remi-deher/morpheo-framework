@@ -7,6 +7,9 @@ using Morpheo.Abstractions;
 
 namespace Morpheo.Core.Server;
 
+// DTO pour la requête d'impression
+public record PrintRequest(string Content, string Sender);
+
 public class MorpheoWebServer
 {
     private readonly MorpheoOptions _options;
@@ -43,13 +46,24 @@ public class MorpheoWebServer
         // 1. Endpoint de santé (Ping) - Utile pour vérifier que le voisin est vraiment là
         _app.MapGet("/api/ping", () => Results.Ok($"Pong from {_options.NodeName}"));
 
-        // 2. Endpoint de test
+        // 2. Endpoint de test d'infos
         _app.MapGet("/api/info", () => Results.Json(new
         {
             Name = _options.NodeName,
             Role = _options.Role.ToString(),
             Time = DateTime.UtcNow
         }));
+
+        // 3. Endpoint de réception d'impression
+        _app.MapPost("/api/print", (PrintRequest request) =>
+        {
+            // C'est ici que plus tard on appellera l'imprimante réelle via IPrintGateway
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"🖨️ [ORDRE REÇU de {request.Sender}] : \"{request.Content}\"");
+            Console.ResetColor();
+
+            return Results.Ok(new { status = "Printed" });
+        });
 
         await _app.StartAsync(ct);
 

@@ -2,7 +2,7 @@
 using Microsoft.Extensions.Logging;
 using Morpheo.Abstractions;
 using Morpheo.Core.Data;
-using Morpheo.Core.Server; // <--- Ne pas oublier
+using Morpheo.Core.Server;
 
 namespace Morpheo.Core;
 
@@ -12,23 +12,27 @@ public class MorpheoNode : IMorpheoNode
     private readonly INetworkDiscovery _discovery;
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<MorpheoNode> _logger;
-
-    // Notre nouveau serveur web
     private readonly MorpheoWebServer _webServer;
+
+    private readonly IMorpheoClient _client;
+
+    // On garde une trace de la tâche de fond pour info
+    private Task? _discoveryTask;
 
     public MorpheoNode(
         MorpheoOptions options,
         INetworkDiscovery discovery,
         IServiceProvider serviceProvider,
         ILogger<MorpheoNode> logger,
-        ILoggerFactory loggerFactory) // <--- On demande l'usine à logs
+        ILoggerFactory loggerFactory,
+        IMorpheoClient client)
     {
         _options = options;
         _discovery = discovery;
         _serviceProvider = serviceProvider;
         _logger = logger;
+        _client = client;
 
-        // On crée le serveur web manuellement
         _webServer = new MorpheoWebServer(options, loggerFactory.CreateLogger<MorpheoWebServer>());
     }
 
@@ -42,8 +46,10 @@ public class MorpheoNode : IMorpheoNode
             using (var scope = _serviceProvider.CreateScope())
             {
                 var initializer = scope.ServiceProvider.GetRequiredService<DatabaseInitializer>();
-                var dbContext = scope.ServiceProvider.GetServices<MorpheoDbContext>().FirstOrDefault()
-                                ?? throw new Exception("Aucun DbContext Morpheo n'a été enregistré !");
+                var dbContext = scope.ServiceProvider.GetServices<MorpheoDbContext>().FirstOrDefault();
+
+                if (dbContext == null)
+                    throw new Exception("Aucun DbContext Morpheo n'a été enregistré !");
 
                 await initializer.InitializeAsync(dbContext);
             }
@@ -55,31 +61,36 @@ public class MorpheoNode : IMorpheoNode
         }
 
         // --- 2. Serveur Web ---
-        // On démarre le serveur web AVANT de s'annoncer sur le réseau
         await _webServer.StartAsync(ct);
         int myHttpPort = _webServer.LocalPort;
 
         // --- 3. Découverte Réseau ---
-        // ASTUCE : On concatène le port dans le champ "IpAddress" pour l'instant (ex: "192.168.1.15:5123")
-        // Cela permet aux voisins de savoir sur quel port HTTP nous contacter.
-        // Dans une version future, on ajoutera un champ "Port" proprement dans le DiscoveryPacket.
-        string myAddressIdentity = $"HTTP_PORT:{myHttpPort}";
+        var myIdentity = new PeerInfo(
+            Guid.NewGuid().ToString(),
+            _options.NodeName,
+            "IP_AUTO",
+            myHttpPort,
+            _options.Role
+        );
 
-        var myIdentity = new PeerInfo(Guid.NewGuid().ToString(), _options.NodeName, myAddressIdentity, _options.Role);
-
-        _discovery.PeerFound += (s, peer) => _logger.LogInformation($"✨ Voisin trouvé : {peer.Name} -> {peer.IpAddress}");
+        _discovery.PeerFound += (s, peer) => _logger.LogInformation($"✨ Voisin trouvé : {peer.Name} ({peer.IpAddress}:{peer.Port})");
         _discovery.PeerLost += (s, peer) => _logger.LogWarning($"💀 Voisin perdu : {peer.Name}");
 
-        await _discovery.StartAdvertisingAsync(myIdentity, ct);
+        // CORRECTION CRUCIALE ICI :
+        // On ne fait PLUS 'await' car cela bloque tout le programme.
+        // On lance la tâche en parallèle et on laisse le programme continuer.
+        _discoveryTask = _discovery.StartAdvertisingAsync(myIdentity, ct);
 
-        _logger.LogInformation("✅ Morpheo est opérationnel (UDP + HTTP).");
+        _logger.LogInformation("✅ Morpheo est opérationnel (UDP + HTTP + CLIENT).");
     }
 
     public async Task StopAsync()
     {
         _logger.LogInformation("Arrêt du nœud Morpheo.");
         await _webServer.StopAsync();
+        // La tâche _discoveryTask s'arrêtera quand le CancellationToken sera annulé ou l'objet disposé
     }
 
     public INetworkDiscovery Discovery => _discovery;
+    public IMorpheoClient Client => _client;
 }
