@@ -13,7 +13,9 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
     private UdpClient? _udpClient;
     private CancellationTokenSource? _cts;
 
-    private readonly ConcurrentDictionary<string, DateTime> _heartbeats = new();
+    // MODIFICATION MAJEURE : On stocke l'info complète du pair + la date de dernière vue
+    // Cela permet au Dashboard d'afficher les noms et les tags des voisins
+    private readonly ConcurrentDictionary<string, (PeerInfo Info, DateTime LastSeen)> _peers = new();
 
     public event EventHandler<PeerInfo>? PeerFound;
     public event EventHandler<PeerInfo>? PeerLost;
@@ -22,6 +24,12 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
     {
         _options = options;
         _logger = logger;
+    }
+
+    // Implémentation de la méthode requise par le Dashboard
+    public IReadOnlyList<PeerInfo> GetPeers()
+    {
+        return _peers.Values.Select(x => x.Info).ToList();
     }
 
     public async Task StartAdvertisingAsync(PeerInfo myInfo, CancellationToken ct)
@@ -63,7 +71,7 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
                 var packet = DiscoveryPacket.Deserialize(result.Buffer);
 
                 if (packet == null) continue;
-                if (packet.Name == _options.NodeName) continue;
+                if (packet.Name == _options.NodeName) continue; // On s'ignore soi-même
 
                 HandleIncomingPacket(packet, result.RemoteEndPoint.Address.ToString());
             }
@@ -89,7 +97,8 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
                     Name = myInfo.Name,
                     Role = myInfo.Role,
                     IpAddress = myInfo.IpAddress,
-                    Port = myInfo.Port, // <--- AJOUT CRUCIAL : On diffuse notre port HTTP
+                    Port = myInfo.Port,
+                    Tags = myInfo.Tags, // <--- IMPORTANT : On diffuse nos capacités
                     Type = DiscoveryMessageType.Hello
                 };
 
@@ -101,7 +110,7 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
                 _logger.LogTrace($"Erreur Broadcast : {ex.Message}");
             }
 
-            await Task.Delay(3000, token);
+            await Task.Delay(3000, token); // Hello toutes les 3 secondes
         }
     }
 
@@ -110,16 +119,15 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
         while (!token.IsCancellationRequested)
         {
             var now = DateTime.UtcNow;
-            var timeout = TimeSpan.FromSeconds(10);
+            var timeout = TimeSpan.FromSeconds(10); // Timeout après 10s sans nouvelles
 
-            foreach (var peer in _heartbeats)
+            foreach (var peer in _peers)
             {
-                if (now - peer.Value > timeout)
+                if (now - peer.Value.LastSeen > timeout)
                 {
-                    if (_heartbeats.TryRemove(peer.Key, out _))
+                    if (_peers.TryRemove(peer.Key, out var removed))
                     {
-                        // Note: On met 0 pour le port ici car l'info n'est plus pertinente
-                        PeerLost?.Invoke(this, new PeerInfo(peer.Key, "Unknown", "", 0, NodeRole.StandardClient));
+                        PeerLost?.Invoke(this, removed.Info);
                     }
                 }
             }
@@ -130,21 +138,26 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
 
     private void HandleIncomingPacket(DiscoveryPacket packet, string realIp)
     {
-        bool isNew = !_heartbeats.ContainsKey(packet.Id);
-        _heartbeats[packet.Id] = DateTime.UtcNow;
+        // On reconstruit l'objet PeerInfo avec toutes les données reçues (Tags inclus)
+        var info = new PeerInfo(packet.Id, packet.Name, realIp, packet.Port, packet.Role, packet.Tags);
 
         if (packet.Type == DiscoveryMessageType.Bye)
         {
-            _heartbeats.TryRemove(packet.Id, out _);
-            // On met packet.Port ici
-            PeerLost?.Invoke(this, new PeerInfo(packet.Id, packet.Name, realIp, packet.Port, packet.Role));
+            if (_peers.TryRemove(packet.Id, out _))
+            {
+                PeerLost?.Invoke(this, info);
+            }
             return;
         }
 
+        bool isNew = !_peers.ContainsKey(packet.Id);
+
+        // On met à jour ou on ajoute le pair
+        _peers[packet.Id] = (info, DateTime.UtcNow);
+
         if (isNew)
         {
-            // <--- AJOUT CRUCIAL : On reconstruit le PeerInfo AVEC LE PORT reçu
-            PeerFound?.Invoke(this, new PeerInfo(packet.Id, packet.Name, realIp, packet.Port, packet.Role));
+            PeerFound?.Invoke(this, info);
         }
     }
 

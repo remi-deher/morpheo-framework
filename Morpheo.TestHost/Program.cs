@@ -23,6 +23,11 @@ builder.Services.AddMorpheo<TestDbContext>(options =>
     options.NodeName = "TEST_PC_" + Random.Shared.Next(100, 999);
     options.Role = NodeRole.StandardClient;
     options.DiscoveryPort = 5555;
+
+    // Capabilities pour tester
+
+    options.Capabilities.Add("PRINTER:ZEBRA");
+    options.Capabilities.Add("SCANNER:BARCODE");
 });
 
 var host = builder.Build();

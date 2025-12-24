@@ -20,13 +20,14 @@ public class DiscoveryPacket
     [JsonPropertyName("ip")]
     public string IpAddress { get; set; } = string.Empty;
 
-    // --- NOUVEAU : On ajoute le port ici ---
     [JsonPropertyName("p")]
     public int Port { get; set; }
-    // ---------------------------------------
 
     [JsonPropertyName("r")]
     public NodeRole Role { get; set; }
+
+    [JsonPropertyName("tg")]
+    public string[] Tags { get; set; } = Array.Empty<string>();
 
     [JsonPropertyName("t")]
     public DiscoveryMessageType Type { get; set; } = DiscoveryMessageType.Hello;

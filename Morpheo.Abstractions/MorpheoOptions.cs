@@ -19,6 +19,9 @@ public class MorpheoOptions
     // Rôle du nœud
     public NodeRole Role { get; set; } = NodeRole.StandardClient;
 
+    // Les capacités définies par l'utilisateur
+    public List<string> Capabilities { get; set; } = new();
+
     // Port UDP
     public int DiscoveryPort { get; set; } = DEFAULT_PORT;
 
