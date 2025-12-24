@@ -1,0 +1,50 @@
+## Configuration pour Morpheo Framework (SDK, Models, WinUI 3)
+
+# Artefacts de compilation (obj/ et bin/)
+[Bb]in/
+[Oo]bj/
+[Gg]enerated/
+
+# Visual Studio
+.vs/
+*.user
+*.userosscache
+*.sln.docstates
+_ReSharper*/
+
+# Fichiers de restauration NuGet
+project.lock.json
+project.assets.json
+*.nuget.props
+*.nuget.targets
+
+# Publication et déploiement MSIX (Spécifique à Morpheo.App)
+AppPackages/
+BundleArtifacts/
+*.msix
+*.appx
+*.appxbundle
+*.msixbundle
+_pkg.dev/
+
+# Fichiers de configuration locale
+*.swp
+*.*~
+.DS_Store
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Environnement de développement et Logs
+*.log
+.env
+launchSettings.json
+
+# Cache de tests
+TestResults/
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
