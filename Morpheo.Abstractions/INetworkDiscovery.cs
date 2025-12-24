@@ -10,4 +10,7 @@ public interface INetworkDiscovery
 
     // Événement quand un voisin disparait (timeout)
     event EventHandler<PeerInfo> PeerLost;
+
+    // Pour le Dashboard
+    IReadOnlyList<PeerInfo> GetPeers();
 }

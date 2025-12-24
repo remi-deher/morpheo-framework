@@ -33,7 +33,9 @@ public class MorpheoNode : IMorpheoNode
         _logger = logger;
         _client = client;
 
-        _webServer = new MorpheoWebServer(options, loggerFactory.CreateLogger<MorpheoWebServer>());
+        // MODIFICATION : On passe 'discovery' au constructeur du WebServer 
+        // pour qu'il puisse afficher la liste des pairs sur le Dashboard.
+        _webServer = new MorpheoWebServer(options, loggerFactory.CreateLogger<MorpheoWebServer>(), discovery);
     }
 
     public async Task StartAsync(CancellationToken ct = default)
@@ -65,20 +67,21 @@ public class MorpheoNode : IMorpheoNode
         int myHttpPort = _webServer.LocalPort;
 
         // --- 3. Découverte Réseau ---
+
+        // Construction de l'identité avec les Tags (Capabilities)
         var myIdentity = new PeerInfo(
             Guid.NewGuid().ToString(),
             _options.NodeName,
             "IP_AUTO",
             myHttpPort,
-            _options.Role
+            _options.Role,
+            _options.Capabilities.ToArray() // <--- AJOUT : On convertit la liste d'options en tableau
         );
 
         _discovery.PeerFound += (s, peer) => _logger.LogInformation($"✨ Voisin trouvé : {peer.Name} ({peer.IpAddress}:{peer.Port})");
         _discovery.PeerLost += (s, peer) => _logger.LogWarning($"💀 Voisin perdu : {peer.Name}");
 
-        // CORRECTION CRUCIALE ICI :
-        // On ne fait PLUS 'await' car cela bloque tout le programme.
-        // On lance la tâche en parallèle et on laisse le programme continuer.
+        // Lancement en tâche de fond (Non-bloquant)
         _discoveryTask = _discovery.StartAdvertisingAsync(myIdentity, ct);
 
         _logger.LogInformation("✅ Morpheo est opérationnel (UDP + HTTP + CLIENT).");
@@ -88,7 +91,6 @@ public class MorpheoNode : IMorpheoNode
     {
         _logger.LogInformation("Arrêt du nœud Morpheo.");
         await _webServer.StopAsync();
-        // La tâche _discoveryTask s'arrêtera quand le CancellationToken sera annulé ou l'objet disposé
     }
 
     public INetworkDiscovery Discovery => _discovery;
