@@ -2,7 +2,7 @@
 using Microsoft.Extensions.Logging;
 using Morpheo.Abstractions;
 
-namespace Morpheo.Core.Data;
+namespace Morpheo.Core.Data; // <--- Vérifiez bien ce namespace
 
 public class DatabaseInitializer
 {
@@ -20,16 +20,15 @@ public class DatabaseInitializer
     /// </summary>
     public string GetDatabasePath()
     {
-        // Si le dev a spécifié un chemin, on le respecte
+        // Si le dev a spécifié un chemin manuellement, on le respecte
         if (!string.IsNullOrWhiteSpace(_options.LocalStoragePath))
             return Path.Combine(_options.LocalStoragePath, "morpheo.db");
 
         // Sinon, on détermine le meilleur endroit selon l'OS
         string folder;
 
-        if (Environment.OSVersion.Platform == PlatformID.Unix) // Linux & Android (souvent)
+        if (Environment.OSVersion.Platform == PlatformID.Unix) // Linux & Android
         {
-            // Sur Android, System.Environment.SpecialFolder.Personal pointe vers le stockage interne privé
             folder = Environment.GetFolderPath(Environment.SpecialFolder.Personal);
         }
         else // Windows
@@ -37,9 +36,12 @@ public class DatabaseInitializer
             folder = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         }
 
-        // On crée le dossier Morpheo s'il n'existe pas
+        // On crée le dossier MorpheoData s'il n'existe pas
         var path = Path.Combine(folder, "MorpheoData");
-        Directory.CreateDirectory(path);
+        if (!Directory.Exists(path))
+        {
+            Directory.CreateDirectory(path);
+        }
 
         return Path.Combine(path, "morpheo.db");
     }
@@ -50,11 +52,10 @@ public class DatabaseInitializer
         {
             _logger.LogInformation("🛠 Vérification de la base de données locale...");
 
-            // Cette commande magique crée le fichier .db et les tables s'ils n'existent pas
-            // Parfait pour le mode "Zero-Conf"
+            // Crée le fichier .db et les tables s'ils n'existent pas
             await context.Database.EnsureCreatedAsync();
 
-            _logger.LogInformation($"✅ Base de données prête : {context.Database.GetDbConnection().DataSource}");
+            _logger.LogInformation($"✅ Base de données prête.");
         }
         catch (Exception ex)
         {
