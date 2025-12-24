@@ -7,17 +7,18 @@ public static class MorpheoServiceExtensions
 {
     public static IServiceCollection AddMorpheo(this IServiceCollection services, Action<MorpheoOptions> configure)
     {
-        // 1. Configuration des options
         var options = new MorpheoOptions();
         configure(options);
         services.AddSingleton(options);
 
-        // 2. Enregistrement du service principal (Le Node)
         services.AddSingleton<MorpheoNode>();
 
-        // Note : On n'enregistre PAS INetworkDiscovery ou IPrintGateway ici.
-        // C'est l'application hôte (Windows/ Linux / Android) qui devra fournir ces implémentations spécifiques.
+        // ENREGISTREMENT DU SERVICE DE DÉCOUVERTE PAR DÉFAUT
+        // On l'enregistre comme implémentation de INetworkDiscovery
+        services.AddSingleton<INetworkDiscovery, Discovery.UdpDiscoveryService>();
 
         return services;
+    }
+    turn services;
     }
 }
