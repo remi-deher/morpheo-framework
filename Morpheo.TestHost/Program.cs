@@ -3,109 +3,96 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Morpheo.Abstractions;
 using Morpheo.Core;
+using Morpheo.Core.Data; // Nécessaire pour MorpheoEntity
 using Morpheo.TestHost;
 
-// Titre de la fenêtre console
+// Titre de la fenêtre
 Console.Title = "Morpheo Test Node";
 
-// 1. Création de l'hôte
 var builder = Host.CreateApplicationBuilder(args);
 
-// Configuration des logs
+// Logs propres
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.SetMinimumLevel(LogLevel.Information);
 
-// 2. Injection de Morpheo avec notre TestDbContext
+// Configuration Morpheo
 builder.Services.AddMorpheo<TestDbContext>(options =>
 {
-    // Nom aléatoire pour identifier facilement les fenêtres
     options.NodeName = "CAISSE_" + Random.Shared.Next(100, 999);
     options.Role = NodeRole.StandardClient;
     options.DiscoveryPort = 5555;
 
-    // --- Configuration des Imprimantes ---
+    // Config imprimantes (Pour rappel)
     options.Printers
-        // 1. On exclut les imprimantes virtuelles ou indésirables
-        .Exclude("Microsoft.*")       // PDF, XPS...
-        .Exclude("OneNote.*")         // OneNote
+        .Exclude("Microsoft.*")
         .Exclude("Fax")
-        .Exclude(".*Ordonnance.*")    // <--- Cas spécifique demandé (Bloquer les imprimantes mixtes)
-
-        // 2. On regroupe les imprimantes valides par fonction
-        .DefineGroup("KITCHEN", ".*Zebra.*")   // Tout ce qui contient "Zebra" va en Cuisine
-        .DefineGroup("RECEIPT", ".*Epson.*");  // Tout ce qui contient "Epson" est un ticket
+        .DefineGroup("KITCHEN", ".*Zebra.*");
 });
 
 var host = builder.Build();
-
-// 3. Récupération et démarrage du Nœud
 var node = host.Services.GetRequiredService<MorpheoNode>();
 
 Console.WriteLine("--- DÉMARRAGE DU TEST ---");
 await node.StartAsync();
 
-// --- LOGIQUE INTERACTIVE POUR LE TEST ---
-
-// Liste locale pour se souvenir des voisins trouvés
+// Gestion des voisins pour l'affichage
 var neighbors = new List<PeerInfo>();
-
-// On s'abonne aux événements pour tenir la liste à jour
-node.Discovery.PeerFound += (s, peer) =>
-{
-    if (!neighbors.Any(n => n.Id == peer.Id))
-    {
-        neighbors.Add(peer);
-    }
-};
-
-node.Discovery.PeerLost += (s, peer) =>
-{
-    neighbors.RemoveAll(n => n.Id == peer.Id);
-};
+node.Discovery.PeerFound += (s, peer) => { if (!neighbors.Any(n => n.Id == peer.Id)) neighbors.Add(peer); };
+node.Discovery.PeerLost += (s, peer) => { neighbors.RemoveAll(n => n.Id == peer.Id); };
 
 Console.WriteLine("-------------------------------------------------");
-Console.WriteLine(" [P] Appuyez sur 'P' pour envoyer une IMPRESSION à un voisin");
-Console.WriteLine(" [Q] Appuyez sur 'Q' pour QUITTER");
+Console.WriteLine(" [P] 'P' -> Test d'IMPRESSION (Hardware)");
+Console.WriteLine(" [S] 'S' -> Test de SYNCHRONISATION (Data)");
+Console.WriteLine(" [Q] 'Q' -> QUITTER");
 Console.WriteLine("-------------------------------------------------");
 
-// Boucle principale
 while (true)
 {
-    // On attend une touche (sans l'afficher)
     if (Console.KeyAvailable)
     {
         var key = Console.ReadKey(true).Key;
 
-        if (key == ConsoleKey.Q)
-        {
-            Console.WriteLine("Arrêt demandé...");
-            break;
-        }
+        if (key == ConsoleKey.Q) break;
 
+        // --- TEST IMPRESSION ---
         if (key == ConsoleKey.P)
         {
-            if (neighbors.Count == 0)
-            {
-                Console.WriteLine("⚠️ Aucun voisin détecté pour le moment.");
-            }
+            if (neighbors.Count == 0) Console.WriteLine("⚠️ Pas de voisin.");
             else
             {
-                // On prend le premier voisin
                 var target = neighbors.First();
-
-                Console.WriteLine($"\n📤 Envoi d'une demande d'impression vers {target.Name}...");
-
-                // On pourrait choisir ici une imprimante spécifique grâce aux Tags
-                // var printerTarget = neighbors.FirstOrDefault(n => n.Tags.Any(t => t.Contains("KITCHEN")));
-
-                await node.Client.SendPrintJobAsync(target, "Hello from Morpheo! " + DateTime.Now.ToLongTimeString());
+                Console.WriteLine($"\n📤 Envoi impression vers {target.Name}...");
+                await node.Client.SendPrintJobAsync(target, "Ticket #1234 : 1x Café");
             }
         }
-    }
 
-    // Petite pause pour ne pas surcharger le CPU
+        // --- TEST SYNCHRO (NOUVEAU) ---
+        if (key == ConsoleKey.S)
+        {
+            // 1. On simule la création d'un produit
+            var newProduct = new Product
+            {
+                Id = Guid.NewGuid().ToString(),
+                Name = "Produit Test " + Random.Shared.Next(1, 100),
+                Price = 10.50m
+            };
+
+            Console.WriteLine($"\n🔄 Création locale de : {newProduct.Name}");
+
+            // 2. On demande à Morpheo de propager l'info
+            // "J'ai créé (CREATE) ce produit, dis-le à tout le monde !"
+            await node.Sync.BroadcastChangeAsync(newProduct, "CREATE");
+        }
+    }
     await Task.Delay(100);
 }
 
 await node.StopAsync();
+
+// --- Entité fictive pour le test ---
+public class Product : MorpheoEntity
+{
+    public string Name { get; set; } = string.Empty;
+    public decimal Price { get; set; }
+}
