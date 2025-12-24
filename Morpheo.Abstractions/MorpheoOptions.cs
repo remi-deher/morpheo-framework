@@ -19,6 +19,9 @@ public class MorpheoOptions
     // Rôle du nœud
     public NodeRole Role { get; set; } = NodeRole.StandardClient;
 
+    // Config des imprimantes
+    public PrinterOptions Printers { get; } = new();
+
     // Les capacités définies par l'utilisateur
     public List<string> Capabilities { get; set; } = new();
 
