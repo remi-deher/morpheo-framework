@@ -15,38 +15,40 @@ public class MorpheoHttpClient : IMorpheoClient
         _logger = logger;
     }
 
-    public async Task<bool> SendPrintJobAsync(PeerInfo target, string content)
+    public async Task SendPrintJobAsync(PeerInfo target, string content)
     {
         try
         {
-            // 1. Création de l'URL cible (ex: http://192.168.1.15:54321/api/print)
-            var url = $"http://{target.IpAddress}:{target.Port}/api/print";
-
-            _logger.LogInformation($"📤 Envoi d'impression vers {target.Name} ({url})...");
-
-            // 2. Création du client léger
             var client = _httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(5); // Fail-fast si le nœud est injoignable
+            client.Timeout = TimeSpan.FromSeconds(5);
 
-            // 3. Envoi de la donnée (Payload)
-            var payload = new { Content = content, Sender = "Moi" };
-            var response = await client.PostAsJsonAsync(url, payload);
+            var url = $"http://{target.IpAddress}:{target.Port}/api/print";
+            var request = new { Content = content, Sender = "Unknown" };
 
-            if (response.IsSuccessStatusCode)
-            {
-                _logger.LogInformation("✅ Impression transmise avec succès !");
-                return true;
-            }
-            else
-            {
-                _logger.LogWarning($"❌ Le voisin a refusé l'impression. Code : {response.StatusCode}");
-                return false;
-            }
+            await client.PostAsJsonAsync(url, request);
         }
         catch (Exception ex)
         {
-            _logger.LogError($"❌ Échec de la communication avec {target.Name} : {ex.Message}");
-            return false;
+            _logger.LogError($"Échec envoi print vers {target.Name} : {ex.Message}");
+            // On ne throw pas ici pour ne pas crasher l'appelant, ou throw si vous préférez gérer l'erreur plus haut.
+        }
+    }
+
+    public async Task SendSyncUpdateAsync(PeerInfo target, SyncLogDto log)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(2);
+
+            var url = $"http://{target.IpAddress}:{target.Port}/api/sync";
+
+            // On envoie et on oublie (Fire & Forget), pas besoin de retourner bool
+            await client.PostAsJsonAsync(url, log);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning($"Échec envoi Sync vers {target.Name} : {ex.Message}");
         }
     }
 }

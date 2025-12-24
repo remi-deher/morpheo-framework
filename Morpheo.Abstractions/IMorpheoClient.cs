@@ -2,6 +2,8 @@
 
 public interface IMorpheoClient
 {
-    // Envoie un ordre d'impression à un nœud spécifique
-    Task<bool> SendPrintJobAsync(PeerInfo target, string content);
+    Task SendPrintJobAsync(PeerInfo target, string content);
+
+    // On utilise Task tout court pour simplifier (Fire & Forget)
+    Task SendSyncUpdateAsync(PeerInfo target, SyncLogDto log);
 }

@@ -5,6 +5,7 @@ using Morpheo.Core.Client;    // Pour MorpheoHttpClient
 using Morpheo.Core.Data;      // Pour DatabaseInitializer
 using Morpheo.Core.Discovery; // Pour UdpDiscoveryService
 using Morpheo.Core.Printers;  // Pour WindowsPrinterService
+using Morpheo.Core.Sync;      // Pour DataSyncService
 
 namespace Morpheo.Core;
 
@@ -30,17 +31,21 @@ public static class MorpheoServiceExtensions
         // Enregistrement du service de découverte par défaut (UDP Broadcast)
         services.AddSingleton<INetworkDiscovery, UdpDiscoveryService>();
 
-        // --- 3. Configuration du Client HTTP (Pour envoyer des ordres) ---
-        services.AddHttpClient(); // Active IHttpClientFactory
+        // --- 3. Client HTTP (Envoi d'ordres & Sync) ---
+        services.AddHttpClient();
         services.AddSingleton<IMorpheoClient, MorpheoHttpClient>();
 
-        // --- 4. Service d'Imprimantes (NOUVEAU) ---
+        // --- 4. Service d'Imprimantes (Printers) ---
         // Permet de scanner les imprimantes Windows locales
         services.AddSingleton<WindowsPrinterService>();
 
-        // --- 5. Configuration de la Base de Données (SQLite) ---
+        // --- 5. Service de Synchronisation (Data Sync) ---
+        // Moteur de réplication "Last Write Wins"
+        services.AddSingleton<DataSyncService>();
 
-        // Service qui calcule le chemin du fichier .db selon l'OS
+        // --- 6. Base de Données (SQLite) ---
+
+        // Service utilitaire pour les chemins de fichiers
         services.AddSingleton<DatabaseInitializer>();
 
         // Configuration du contexte Entity Framework utilisateur (TDbContext)
@@ -51,8 +56,8 @@ public static class MorpheoServiceExtensions
             dbOptions.UseSqlite($"Data Source={dbPath}");
         });
 
-        // ASTUCE CRUCIALE : On crée un alias pour que MorpheoNode puisse demander 
-        // "MorpheoDbContext" et recevoir l'instance de "TDbContext"
+        // On crée un alias pour que MorpheoNode (et DataSyncService) 
+        // puisse demander "MorpheoDbContext" et recevoir l'instance de "TDbContext"
         services.AddScoped<MorpheoDbContext>(provider => provider.GetRequiredService<TDbContext>());
 
         return services;

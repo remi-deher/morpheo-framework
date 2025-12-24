@@ -1,9 +1,11 @@
 ﻿using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Morpheo.Abstractions;
+using Morpheo.Core.Sync; // Pour DataSyncService
 using System.Text;
 
 namespace Morpheo.Core.Server;
@@ -14,7 +16,9 @@ public class MorpheoWebServer
 {
     private readonly MorpheoOptions _options;
     private readonly ILogger<MorpheoWebServer> _logger;
-    private readonly INetworkDiscovery _discovery; // <--- On a besoin de ça pour lister les voisins
+    private readonly INetworkDiscovery _discovery;
+    private readonly DataSyncService _syncService; // <--- Service de Synchro
+
     private WebApplication? _app;
 
     public int LocalPort { get; private set; }
@@ -22,23 +26,29 @@ public class MorpheoWebServer
     public MorpheoWebServer(
         MorpheoOptions options,
         ILogger<MorpheoWebServer> logger,
-        INetworkDiscovery discovery)
+        INetworkDiscovery discovery,
+        DataSyncService syncService) // <--- Injection
     {
         _options = options;
         _logger = logger;
         _discovery = discovery;
+        _syncService = syncService;
     }
 
     public async Task StartAsync(CancellationToken ct)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
+
+        // Écoute sur un port aléatoire disponible (0)
         builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(0));
 
         _app = builder.Build();
 
-        // --- API ---
+        // --- API : Ping ---
         _app.MapGet("/api/ping", () => Results.Ok($"Pong from {_options.NodeName}"));
+
+        // --- API : Print ---
         _app.MapPost("/api/print", (PrintRequest request) =>
         {
             Console.ForegroundColor = ConsoleColor.Cyan;
@@ -47,10 +57,20 @@ public class MorpheoWebServer
             return Results.Ok(new { status = "Printed" });
         });
 
-        // --- DASHBOARD ---
+        // --- API : Sync (NOUVEAU) ---
+        _app.MapPost("/api/sync", async ([FromBody] SyncLogDto dto) =>
+        {
+            // On passe le relais au moteur de synchro pour gérer les conflits
+            await _syncService.ApplyRemoteChangeAsync(dto);
+            return Results.Ok();
+        });
+
+        // --- DASHBOARD HTML ---
         _app.MapGet("/morpheo/dashboard", () => Results.Content(GenerateDashboardHtml(), "text/html"));
 
         await _app.StartAsync(ct);
+
+        // Récupération du port effectif
         LocalPort = _app.Urls.Select(u => new Uri(u).Port).FirstOrDefault();
         _logger.LogInformation($"🌍 Dashboard accessible sur : http://localhost:{LocalPort}/morpheo/dashboard");
     }
