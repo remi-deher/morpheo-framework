@@ -49,7 +49,6 @@ public class DataSyncService
         try
         {
             long lastTick = 0;
-            // Récupération du dernier Tick local
             using (var scope = _serviceProvider.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<MorpheoDbContext>();
@@ -63,22 +62,14 @@ public class DataSyncService
 
             bool moreDataAvailable = true;
             int totalSynced = 0;
-            bool hasError = false; // 🚩 Nouveau flag pour détecter l'échec
 
+            // 🔄 BOUCLE DE PAGINATION
             while (moreDataAvailable)
             {
-                // Note : Assurez-vous que votre Client renvoie NULL en cas d'exception, 
-                // ou laissez l'exception remonter jusqu'au catch ci-dessous.
+                // On récupère un paquet de 500 max
                 var batch = await _client.GetHistoryAsync(peer, lastTick);
 
-                if (batch == null)
-                {
-                    // 🚩 Si c'est null, c'est qu'il y a eu une erreur réseau masquée par le client
-                    hasError = true;
-                    break;
-                }
-
-                if (batch.Count == 0)
+                if (batch == null || batch.Count == 0)
                 {
                     moreDataAvailable = false;
                 }
@@ -89,31 +80,31 @@ public class DataSyncService
                     foreach (var log in batch)
                     {
                         await ApplyRemoteChangeAsync(log);
-                        if (log.Timestamp > lastTick) lastTick = log.Timestamp;
+
+                        // On avance le curseur pour la prochaine requête
+                        if (log.Timestamp > lastTick)
+                            lastTick = log.Timestamp;
                     }
 
                     totalSynced += batch.Count;
-                    if (batch.Count < 500) moreDataAvailable = false;
+
+                    // Si on a reçu moins de 500 items, c'est que c'était le dernier paquet
+                    if (batch.Count < 500)
+                        moreDataAvailable = false;
                 }
             }
 
-            // 📢 Rapport final correct
-            if (hasError)
-            {
-                _logger.LogWarning($"⚠️ COLD SYNC INTERROMPU avec {peer.Name}. (Erreur distante ou réseau)");
-            }
-            else if (totalSynced > 0)
-            {
+            if (totalSynced > 0)
                 _logger.LogInformation($"✅ COLD SYNC TERMINÉ. Total synchronisé : {totalSynced} éléments.");
-            }
             else
-            {
-                _logger.LogInformation("✅ Déjà à jour (Aucune nouvelle donnée).");
-            }
+                _logger.LogInformation("✅ Déjà à jour.");
+        }
+        catch (HttpRequestException httpEx)
+        {
+            _logger.LogError($"❌ ÉCHEC RÉSEAU vers {peer.Name} : {httpEx.Message}");
         }
         catch (Exception ex)
         {
-            // Ici on attrape les vraies erreurs (500, Timeout, etc)
             _logger.LogError($"❌ CRASH COLD SYNC : {ex.Message}");
         }
     }
