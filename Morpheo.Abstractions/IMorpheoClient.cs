@@ -2,8 +2,12 @@
 
 public interface IMorpheoClient
 {
+    // Envoi d'un ordre d'impression (Fire & Forget)
     Task SendPrintJobAsync(PeerInfo target, string content);
 
-    // On utilise Task tout court pour simplifier (Fire & Forget)
+    // Envoi d'une nouvelle donnée (Push)
     Task SendSyncUpdateAsync(PeerInfo target, SyncLogDto log);
+
+    // NOUVEAU : Demande de l'historique manquant (Pull)
+    Task<List<SyncLogDto>> GetHistoryAsync(PeerInfo target, long sinceTick);
 }

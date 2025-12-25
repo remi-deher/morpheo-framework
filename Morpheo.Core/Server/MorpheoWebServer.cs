@@ -2,10 +2,12 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Morpheo.Abstractions;
-using Morpheo.Core.Sync; // Pour DataSyncService
+using Morpheo.Core.Data;
+using Morpheo.Core.Sync;
 using System.Text;
 
 namespace Morpheo.Core.Server;
@@ -17,7 +19,7 @@ public class MorpheoWebServer
     private readonly MorpheoOptions _options;
     private readonly ILogger<MorpheoWebServer> _logger;
     private readonly INetworkDiscovery _discovery;
-    private readonly DataSyncService _syncService; // <--- Service de Synchro
+    private readonly DataSyncService _syncService;
 
     private WebApplication? _app;
 
@@ -27,7 +29,7 @@ public class MorpheoWebServer
         MorpheoOptions options,
         ILogger<MorpheoWebServer> logger,
         INetworkDiscovery discovery,
-        DataSyncService syncService) // <--- Injection
+        DataSyncService syncService)
     {
         _options = options;
         _logger = logger;
@@ -38,9 +40,11 @@ public class MorpheoWebServer
     public async Task StartAsync(CancellationToken ct)
     {
         var builder = WebApplication.CreateBuilder();
+
+        // Nettoyage des logs par défaut
         builder.Logging.ClearProviders();
 
-        // Écoute sur un port aléatoire disponible (0)
+        // Écoute sur n'importe quelle IP (IPv4/IPv6) sur un port dynamique (0)
         builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(0));
 
         _app = builder.Build();
@@ -48,7 +52,7 @@ public class MorpheoWebServer
         // --- API : Ping ---
         _app.MapGet("/api/ping", () => Results.Ok($"Pong from {_options.NodeName}"));
 
-        // --- API : Print ---
+        // --- API : Print (Test) ---
         _app.MapPost("/api/print", (PrintRequest request) =>
         {
             Console.ForegroundColor = ConsoleColor.Cyan;
@@ -57,12 +61,58 @@ public class MorpheoWebServer
             return Results.Ok(new { status = "Printed" });
         });
 
-        // --- API : Sync (NOUVEAU) ---
-        _app.MapPost("/api/sync", async ([FromBody] SyncLogDto dto) =>
+        // --- API : Sync (PUSH - Hot Sync) ---
+        _app.MapPost("/api/sync", async ([FromBody] SyncLogDto dto, IServiceProvider sp) =>
         {
-            // On passe le relais au moteur de synchro pour gérer les conflits
-            await _syncService.ApplyRemoteChangeAsync(dto);
-            return Results.Ok();
+            try
+            {
+                await _syncService.ApplyRemoteChangeAsync(dto);
+                return Results.Ok();
+            }
+            catch (Exception ex)
+            {
+                var logger = sp.GetService<ILogger<MorpheoWebServer>>();
+                logger?.LogError($"Erreur réception Sync : {ex.Message}");
+                return Results.Problem(ex.Message);
+            }
+        });
+
+        // --- API : Sync History (PULL - Cold Sync) ---
+        // ✅ CORRECTION CRITIQUE : Pagination + Projection DTO
+        _app.MapGet("/api/sync/history", async (long since, IServiceProvider sp) =>
+        {
+            using var scope = sp.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<MorpheoDbContext>();
+            var logger = scope.ServiceProvider.GetRequiredService<ILogger<MorpheoWebServer>>();
+
+            const int BATCH_SIZE = 500; // Limite pour éviter l'erreur 500
+
+            try
+            {
+                // On projette directement en DTO via .Select() AVANT le .ToListAsync()
+                // Cela génère un SQL optimisé et évite de charger les entités lourdes en RAM
+                var logs = await db.SyncLogs
+                    .AsNoTracking()
+                    .Where(l => l.Timestamp > since)
+                    .OrderBy(l => l.Timestamp)
+                    .Take(BATCH_SIZE)
+                    .Select(l => new SyncLogDto(
+                        l.Id,
+                        l.EntityId,
+                        l.EntityName,
+                        l.JsonData,
+                        l.Action,
+                        l.Timestamp
+                    ))
+                    .ToListAsync();
+
+                return Results.Ok(logs);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Erreur critique lors de l'export de l'historique.");
+                return Results.Problem(detail: ex.Message, statusCode: 500);
+            }
         });
 
         // --- DASHBOARD HTML ---
@@ -70,9 +120,8 @@ public class MorpheoWebServer
 
         await _app.StartAsync(ct);
 
-        // Récupération du port effectif
         LocalPort = _app.Urls.Select(u => new Uri(u).Port).FirstOrDefault();
-        _logger.LogInformation($"🌍 Dashboard accessible sur : http://localhost:{LocalPort}/morpheo/dashboard");
+        _logger.LogInformation($"🌍 Dashboard : http://localhost:{LocalPort}/morpheo/dashboard");
     }
 
     private string GenerateDashboardHtml()
@@ -89,31 +138,23 @@ public class MorpheoWebServer
 
         sb.Append($"<h1>🕸️ Morpheo Node: {_options.NodeName}</h1>");
 
-        // Carte d'identité
         sb.Append("<div class='card'>");
         sb.Append($"<h3>My Status</h3>");
         sb.Append($"<p><strong>Role:</strong> {_options.Role} | <strong>Port:</strong> {LocalPort}</p>");
-        sb.Append("<div><strong>My Capabilities:</strong><br/>");
-        if (_options.Capabilities.Count == 0) sb.Append("<em>None</em>");
-        foreach (var cap in _options.Capabilities) sb.Append($"<span class='badge'>{cap}</span>");
-        sb.Append("</div></div>");
+        sb.Append("</div>");
 
-        // Liste des voisins
         sb.Append("<div class='card'>");
         sb.Append($"<h3>Network Mesh ({peers.Count} peers)</h3>");
-        if (peers.Count == 0) sb.Append("<p><em>Waiting for neighbors...</em></p>");
+        sb.Append(peers.Count == 0 ? "<p><em>Waiting for neighbors...</em></p>" : "");
 
         foreach (var peer in peers)
         {
             sb.Append("<div class='peer-row'>");
             sb.Append($"<div><strong>{peer.Name}</strong> <br/><small>{peer.IpAddress}:{peer.Port}</small></div>");
-            sb.Append("<div>");
-            foreach (var tag in peer.Tags) sb.Append($"<span class='badge'>{tag}</span>");
-            sb.Append("</div></div>");
+            sb.Append("</div>");
         }
         sb.Append("</div>");
-
-        sb.Append("<script>setTimeout(() => window.location.reload(), 3000);</script>"); // Auto-refresh 3s
+        sb.Append("<script>setTimeout(() => window.location.reload(), 3000);</script>");
         sb.Append("</body></html>");
 
         return sb.ToString();

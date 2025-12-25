@@ -14,8 +14,8 @@ public class DataSyncService
     private readonly INetworkDiscovery _discovery;
     private readonly ILogger<DataSyncService> _logger;
 
-    // On garde une liste locale des voisins pour éviter d'interroger le discovery à chaque fois
     private readonly List<PeerInfo> _peers = new();
+    public event EventHandler<SyncLog>? DataReceived;
 
     public DataSyncService(
         IServiceProvider serviceProvider,
@@ -28,17 +28,98 @@ public class DataSyncService
         _discovery = discovery;
         _logger = logger;
 
-        // Mise à jour de la liste des voisins en temps réel
-        _discovery.PeerFound += (s, p) => { lock (_peers) { if (!_peers.Any(x => x.Id == p.Id)) _peers.Add(p); } };
+        // Gestion de la liste des voisins
         _discovery.PeerLost += (s, p) => { lock (_peers) { _peers.RemoveAll(x => x.Id == p.Id); } };
+
+        // Initial Sync
+        _discovery.PeerFound += (s, peer) =>
+        {
+            lock (_peers) { if (!_peers.Any(x => x.Id == peer.Id)) _peers.Add(peer); }
+            Task.Run(async () => await SynchronizeWithPeerAsync(peer));
+        };
     }
 
     /// <summary>
-    /// À appeler quand vous modifiez une donnée localement (PUSH)
+    /// Récupère l'historique manquant par paquets (Pagination)
     /// </summary>
+    private async Task SynchronizeWithPeerAsync(PeerInfo peer)
+    {
+        _logger.LogInformation($"🔄 DEBUT COLD SYNC avec {peer.Name} ({peer.IpAddress}:{peer.Port})...");
+
+        try
+        {
+            long lastTick = 0;
+            // Récupération du dernier Tick local
+            using (var scope = _serviceProvider.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<MorpheoDbContext>();
+                if (await db.SyncLogs.AnyAsync())
+                {
+                    lastTick = await db.SyncLogs.MaxAsync(l => l.Timestamp);
+                }
+            }
+
+            _logger.LogInformation($"📅 Ma dernière donnée date de : {new DateTime(lastTick)} (Ticks: {lastTick})");
+
+            bool moreDataAvailable = true;
+            int totalSynced = 0;
+            bool hasError = false; // 🚩 Nouveau flag pour détecter l'échec
+
+            while (moreDataAvailable)
+            {
+                // Note : Assurez-vous que votre Client renvoie NULL en cas d'exception, 
+                // ou laissez l'exception remonter jusqu'au catch ci-dessous.
+                var batch = await _client.GetHistoryAsync(peer, lastTick);
+
+                if (batch == null)
+                {
+                    // 🚩 Si c'est null, c'est qu'il y a eu une erreur réseau masquée par le client
+                    hasError = true;
+                    break;
+                }
+
+                if (batch.Count == 0)
+                {
+                    moreDataAvailable = false;
+                }
+                else
+                {
+                    _logger.LogInformation($"📥 Réception d'un paquet de {batch.Count} logs...");
+
+                    foreach (var log in batch)
+                    {
+                        await ApplyRemoteChangeAsync(log);
+                        if (log.Timestamp > lastTick) lastTick = log.Timestamp;
+                    }
+
+                    totalSynced += batch.Count;
+                    if (batch.Count < 500) moreDataAvailable = false;
+                }
+            }
+
+            // 📢 Rapport final correct
+            if (hasError)
+            {
+                _logger.LogWarning($"⚠️ COLD SYNC INTERROMPU avec {peer.Name}. (Erreur distante ou réseau)");
+            }
+            else if (totalSynced > 0)
+            {
+                _logger.LogInformation($"✅ COLD SYNC TERMINÉ. Total synchronisé : {totalSynced} éléments.");
+            }
+            else
+            {
+                _logger.LogInformation("✅ Déjà à jour (Aucune nouvelle donnée).");
+            }
+        }
+        catch (Exception ex)
+        {
+            // Ici on attrape les vraies erreurs (500, Timeout, etc)
+            _logger.LogError($"❌ CRASH COLD SYNC : {ex.Message}");
+        }
+    }
+
     public async Task BroadcastChangeAsync<T>(T entity, string action) where T : MorpheoEntity
     {
-        // 1. Création du Log
         var log = new SyncLog
         {
             Id = Guid.NewGuid().ToString(),
@@ -46,11 +127,10 @@ public class DataSyncService
             EntityName = typeof(T).Name,
             Action = action,
             JsonData = JsonSerializer.Serialize(entity),
-            Timestamp = DateTime.UtcNow.Ticks, // L'heure de référence
+            Timestamp = DateTime.UtcNow.Ticks,
             IsFromRemote = false
         };
 
-        // 2. Sauvegarde Locale (Historique)
         using (var scope = _serviceProvider.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<MorpheoDbContext>();
@@ -58,7 +138,6 @@ public class DataSyncService
             await db.SaveChangesAsync();
         }
 
-        // 3. Propagation asynchrone (Fire & Forget)
         _ = Task.Run(() => PushToPeers(log));
     }
 
@@ -66,35 +145,26 @@ public class DataSyncService
     {
         PeerInfo[] targets;
         lock (_peers) targets = _peers.ToArray();
-
         if (targets.Length == 0) return;
 
         var dto = new SyncLogDto(log.Id, log.EntityId, log.EntityName, log.JsonData, log.Action, log.Timestamp);
 
-        _logger.LogInformation($"🔄 Sync {log.EntityName} vers {targets.Length} voisins...");
-
         foreach (var peer in targets)
         {
-            // On n'attend pas la réponse pour ne pas ralentir la boucle
             try { await _client.SendSyncUpdateAsync(peer, dto); }
-            catch { /* Géré dans le client */ }
+            catch { /* Ignoré pour ne pas bloquer */ }
         }
     }
 
-    /// <summary>
-    /// Appelé quand on reçoit une donnée d'un voisin (PULL/RECEIVE)
-    /// </summary>
     public async Task ApplyRemoteChangeAsync(SyncLogDto remoteDto)
     {
         using var scope = _serviceProvider.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<MorpheoDbContext>();
 
-        // 1. Idempotence : A-t-on déjà traité ce message exact ?
-        if (await db.SyncLogs.AnyAsync(l => l.Id == remoteDto.Id))
-            return; // Déjà vu, on ignore.
+        // 1. Déjà reçu ?
+        if (await db.SyncLogs.AnyAsync(l => l.Id == remoteDto.Id)) return;
 
-        // 2. Gestion de Conflit (Last Write Wins)
-        // On regarde si on a une version plus récente de cet objet localement
+        // 2. Gestion de conflit (Last Write Wins)
         var existingLog = await db.SyncLogs
             .Where(l => l.EntityId == remoteDto.EntityId)
             .OrderByDescending(l => l.Timestamp)
@@ -102,13 +172,10 @@ public class DataSyncService
 
         if (existingLog != null && existingLog.Timestamp > remoteDto.Timestamp)
         {
-            _logger.LogWarning($"⚔️ Conflit gagné (Local plus récent) pour {remoteDto.EntityName} : {remoteDto.EntityId}");
-            return; // Notre version est plus récente, on ignore celle du voisin.
+            // Notre donnée locale est plus récente, on ignore celle du voisin
+            return;
         }
 
-        _logger.LogInformation($"📥 Mise à jour acceptée : {remoteDto.EntityName} ({remoteDto.Action})");
-
-        // 3. On enregistre le log
         var newLog = new SyncLog
         {
             Id = remoteDto.Id,
@@ -117,14 +184,12 @@ public class DataSyncService
             JsonData = remoteDto.JsonData,
             Action = remoteDto.Action,
             Timestamp = remoteDto.Timestamp,
-            IsFromRemote = true // IMPORTANT : Ne pas re-broadcaster !
+            IsFromRemote = true
         };
+
         db.SyncLogs.Add(newLog);
-
-        // 4. On applique la modification sur la VRAIE table (Pas juste le log)
-        // Note : C'est ici qu'on ferait de la réflexion ou un mapping dynamique.
-        // Pour ce framework, on stocke juste le log, l'application hôte pourra réagir via un événement si besoin.
-
         await db.SaveChangesAsync();
+
+        DataReceived?.Invoke(this, newLog);
     }
 }
