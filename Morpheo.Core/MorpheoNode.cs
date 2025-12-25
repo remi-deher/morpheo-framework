@@ -25,7 +25,7 @@ public class MorpheoNode : IMorpheoNode
     public MorpheoNode(
         MorpheoOptions options,
         INetworkDiscovery discovery,
-        IServiceProvider serviceProvider, // 👈 On récupère le container principal ici
+        IServiceProvider serviceProvider, // 👈 On récupère le container principal
         ILogger<MorpheoNode> logger,
         ILoggerFactory loggerFactory,
         IMorpheoClient client,
@@ -40,13 +40,14 @@ public class MorpheoNode : IMorpheoNode
         _printerService = printerService;
         _syncService = syncService;
 
-        // 🔧 FIX : On passe 'serviceProvider' comme 5ème argument
+        // ✅ C'est le bon endroit pour créer le WebServer
+        // On passe 'serviceProvider' pour qu'il puisse accéder à la BDD principale
         _webServer = new MorpheoWebServer(
             options,
             loggerFactory.CreateLogger<MorpheoWebServer>(),
             discovery,
             syncService,
-            serviceProvider // <--- C'est ici qu'on fait le lien !
+            serviceProvider // <--- LA CLEF DU FIX 500
         );
     }
 
@@ -54,58 +55,26 @@ public class MorpheoNode : IMorpheoNode
     {
         _logger.LogInformation($"🚀 Démarrage de Morpheo Node : {_options.NodeName}");
 
-        // 1. Initialisation de la BDD via le Scope principal
-        try
+        // 1. Init BDD
+        using (var scope = _serviceProvider.CreateScope())
         {
-            using (var scope = _serviceProvider.CreateScope())
-            {
-                var initializer = scope.ServiceProvider.GetRequiredService<DatabaseInitializer>();
-                // On récupère tous les DbContexts enregistrés pour trouver celui de Morpheo
-                var dbContext = scope.ServiceProvider.GetServices<MorpheoDbContext>().FirstOrDefault();
-
-                if (dbContext == null)
-                    throw new Exception("Aucun DbContext Morpheo n'a été enregistré !");
-
-                await initializer.InitializeAsync(dbContext);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogCritical(ex, "❌ Erreur critique lors de l'initialisation BDD.");
-            throw;
+            var initializer = scope.ServiceProvider.GetRequiredService<DatabaseInitializer>();
+            var dbContext = scope.ServiceProvider.GetServices<MorpheoDbContext>().FirstOrDefault();
+            if (dbContext == null) throw new Exception("Erreur config BDD");
+            await initializer.InitializeAsync(dbContext);
         }
 
-        // 2. Démarrage du Web Server (qui utilisera aussi _serviceProvider pour ses scopes)
+        // 2. Start Web Server
         await _webServer.StartAsync(ct);
-        int myHttpPort = _webServer.LocalPort;
 
-        // 3. Découverte & Printers
-        var finalCapabilities = new List<string>(_options.Capabilities);
-        try
-        {
-            var localPrinters = _printerService.GetAvailablePrinters();
-            foreach (var p in localPrinters)
-            {
-                finalCapabilities.Add($"PRINTER:{p.Group}:{p.Name}");
-            }
-        }
-        catch { /* Ignoré si erreur imprimante */ }
+        // 3. Discovery
+        var port = _webServer.LocalPort;
+        var identity = new PeerInfo(Guid.NewGuid().ToString(), _options.NodeName, "IP_AUTO", port, _options.Role, Array.Empty<string>());
 
-        var myIdentity = new PeerInfo(
-            Guid.NewGuid().ToString(),
-            _options.NodeName,
-            "IP_AUTO",
-            myHttpPort,
-            _options.Role,
-            finalCapabilities.ToArray()
-        );
+        _discovery.PeerFound += (s, p) => _logger.LogInformation($"✨ Voisin : {p.Name}");
+        _discoveryTask = _discovery.StartAdvertisingAsync(identity, ct);
 
-        _discovery.PeerFound += (s, peer) => _logger.LogInformation($"✨ Voisin trouvé : {peer.Name}");
-        _discovery.PeerLost += (s, peer) => _logger.LogWarning($"💀 Voisin perdu : {peer.Name}");
-
-        _discoveryTask = _discovery.StartAdvertisingAsync(myIdentity, ct);
-
-        _logger.LogInformation("✅ Morpheo Node opérationnel.");
+        _logger.LogInformation("✅ Node Prêt.");
     }
 
     public async Task StopAsync()

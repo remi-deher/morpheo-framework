@@ -1,11 +1,12 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Morpheo.Abstractions;
-using Morpheo.Core.Client;    // Pour MorpheoHttpClient
-using Morpheo.Core.Data;      // Pour DatabaseInitializer
-using Morpheo.Core.Discovery; // Pour UdpDiscoveryService
-using Morpheo.Core.Printers;  // Pour WindowsPrinterService
-using Morpheo.Core.Sync;      // Pour DataSyncService
+using Morpheo.Core.Client;
+using Morpheo.Core.Data;
+using Morpheo.Core.Discovery;
+using Morpheo.Core.Printers;
+using Morpheo.Core.Server;
+using Morpheo.Core.Sync;
 
 namespace Morpheo.Core;
 
@@ -16,39 +17,32 @@ public static class MorpheoServiceExtensions
         Action<MorpheoOptions> configure)
         where TDbContext : MorpheoDbContext
     {
-        // --- 1. Configuration et Validation des options ---
+        // 1. Configuration
         var options = new MorpheoOptions();
         configure(options);
-
-        // Sécurité : On vérifie que le port est valide avant d'aller plus loin
         options.Validate();
-
         services.AddSingleton(options);
 
-        // --- 2. Enregistrement des Services Core ---
+        // 2. Services Core
         services.AddSingleton<MorpheoNode>();
-
-        // Enregistrement du service de découverte par défaut (UDP Broadcast)
         services.AddSingleton<INetworkDiscovery, UdpDiscoveryService>();
 
-        // --- 3. Client HTTP (Envoi d'ordres & Sync) ---
+        // 3. Client & Serveur
         services.AddHttpClient();
         services.AddSingleton<IMorpheoClient, MorpheoHttpClient>();
 
-        // --- 4. Service d'Imprimantes (Printers) ---
-        // Permet de scanner les imprimantes Windows locales
+        // IMPORTANT : On enregistre le WebServer pour qu'il soit injectable si besoin
+        services.AddSingleton<MorpheoWebServer>();
+
+        // 4. Imprimantes
         services.AddSingleton<WindowsPrinterService>();
 
-        // --- 5. Service de Synchronisation (Data Sync) ---
-        // Moteur de réplication "Last Write Wins"
+        // 5. Synchro
         services.AddSingleton<DataSyncService>();
 
-        // --- 6. Base de Données (SQLite) ---
-
-        // Service utilitaire pour les chemins de fichiers
+        // 6. Base de Données
         services.AddSingleton<DatabaseInitializer>();
 
-        // Configuration du contexte Entity Framework utilisateur (TDbContext)
         services.AddDbContext<TDbContext>((provider, dbOptions) =>
         {
             var initializer = provider.GetRequiredService<DatabaseInitializer>();
@@ -56,8 +50,7 @@ public static class MorpheoServiceExtensions
             dbOptions.UseSqlite($"Data Source={dbPath}");
         });
 
-        // On crée un alias pour que MorpheoNode (et DataSyncService) 
-        // puisse demander "MorpheoDbContext" et recevoir l'instance de "TDbContext"
+        // Alias pour MorpheoDbContext
         services.AddScoped<MorpheoDbContext>(provider => provider.GetRequiredService<TDbContext>());
 
         return services;
