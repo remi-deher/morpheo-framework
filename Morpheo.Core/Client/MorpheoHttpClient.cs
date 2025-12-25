@@ -1,5 +1,4 @@
-﻿using System.Net;
-using System.Net.Http.Json;
+﻿using System.Net.Http.Json;
 using Microsoft.Extensions.Logging;
 using Morpheo.Abstractions;
 
@@ -9,25 +8,30 @@ public class MorpheoHttpClient : IMorpheoClient
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<MorpheoHttpClient> _logger;
+    private readonly MorpheoOptions _options; // 1. On injecte les options
 
-    public MorpheoHttpClient(IHttpClientFactory httpClientFactory, ILogger<MorpheoHttpClient> logger)
+    public MorpheoHttpClient(
+        IHttpClientFactory httpClientFactory,
+        ILogger<MorpheoHttpClient> logger,
+        MorpheoOptions options)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
+        _options = options;
     }
 
-    // Méthode utilitaire pour créer une URL valide (gère IPv4 et IPv6)
     private string BuildUrl(PeerInfo target, string path)
     {
-        var address = target.IpAddress;
+        // 2. Convention : on respecte le choix de sécurité
+        string scheme = _options.UseSecureConnection ? "https" : "http";
 
-        // Si c'est une adresse IPv6 brute (ex: ::1), il faut l'entourer de crochets []
+        var address = target.IpAddress;
         if (address.Contains(":") && !address.Contains("["))
         {
             address = $"[{address}]";
         }
 
-        return $"http://{address}:{target.Port}{path}";
+        return $"{scheme}://{address}:{target.Port}{path}";
     }
 
     public async Task SendPrintJobAsync(PeerInfo target, string content)
@@ -38,12 +42,12 @@ public class MorpheoHttpClient : IMorpheoClient
             client.Timeout = TimeSpan.FromSeconds(5);
             var url = BuildUrl(target, "/api/print");
 
-            var request = new { Content = content, Sender = "Unknown" };
+            var request = new { Content = content, Sender = _options.NodeName };
             await client.PostAsJsonAsync(url, request);
         }
         catch (Exception ex)
         {
-            _logger.LogError($"❌ Erreur PRINT vers {target.Name} ({target.IpAddress}): {ex.Message}");
+            _logger.LogError($"❌ Erreur PRINT vers {target.Name} : {ex.Message}");
         }
     }
 
@@ -63,7 +67,7 @@ public class MorpheoHttpClient : IMorpheoClient
         }
         catch (Exception ex)
         {
-            _logger.LogWarning($"❌ Erreur SYNC PUSH vers {target.Name}: {ex.Message}");
+            _logger.LogDebug($"Sync échouée vers {target.Name} (Normal si déconnecté)");
         }
     }
 
@@ -74,18 +78,11 @@ public class MorpheoHttpClient : IMorpheoClient
         {
             var client = _httpClientFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(10);
-
-            _logger.LogInformation($"📞 Appel Historique : GET {url}");
-
-            var result = await client.GetFromJsonAsync<List<SyncLogDto>>(url);
-
-            _logger.LogInformation($"✅ Historique reçu de {target.Name} : {result?.Count ?? 0} éléments.");
-            return result ?? new List<SyncLogDto>();
+            return await client.GetFromJsonAsync<List<SyncLogDto>>(url) ?? new List<SyncLogDto>();
         }
         catch (Exception ex)
         {
-            // ICI on loggue l'erreur précise
-            _logger.LogError($"❌ ÉCHEC COLD SYNC vers {target.Name} ({url}) : {ex.Message}");
+            _logger.LogError($"❌ ÉCHEC COLD SYNC vers {target.Name} : {ex.Message}");
             return new List<SyncLogDto>();
         }
     }

@@ -23,6 +23,17 @@ L'architecture logicielle standard (Client-Serveur) est obsolète pour les envir
 |**Configuration**|Configuration figés.|**Flexibilité.** Un client peut être configuré de manière chirurgicale pour répondre au besoin de resilience.|
 
 -----
+
+**💎 La Règle d'Or : "Opt-in Complexity"**
+
+Morpheo respecte votre architecture. Il ne force jamais l'utilisation de composants lourds ou spécifiques à un OS.
+
+***Convention over Configuration*** : Par défaut, Morpheo démarre en mode "Zéro Config" : HTTP standard, Discovery optimisé, et moteur d'impression neutre.
+
+***Opt-in Complexity*** : Vous avez besoin de HTTPS ? De l'impression via le Spooler Windows ? D'une stratégie de sécurité fine ? Vous l'activez explicitement.
+
+-----
+
 **🏗 Architecture & Concepts Clés**
 
 Le framework repose sur trois piliers fondamentaux qui abstraient la complexité du réseau pour le développeur.

@@ -7,7 +7,7 @@ namespace Morpheo.Core.Printers;
 
 public record LocalPrinter(string Name, string Group);
 
-public class WindowsPrinterService
+public class WindowsPrinterService : IPrintGateway
 {
     private readonly MorpheoOptions _options;
     private readonly ILogger<WindowsPrinterService> _logger;
@@ -18,34 +18,70 @@ public class WindowsPrinterService
         _logger = logger;
     }
 
-    public List<LocalPrinter> GetAvailablePrinters()
+    /// <summary>
+    /// Implémentation de l'interface IPrintGateway.
+    /// Retourne la liste des noms d'imprimantes disponibles et filtrées.
+    /// </summary>
+    public Task<IEnumerable<string>> GetLocalPrintersAsync()
+    {
+        // On réutilise la logique interne qui gère les groupes et exclusions
+        var localPrinters = GetAvailablePrintersObjects();
+        var names = localPrinters.Select(p => p.Name);
+
+        return Task.FromResult(names);
+    }
+
+    /// <summary>
+    /// Implémentation de l'interface IPrintGateway.
+    /// Reçoit le contenu binaire (ZPL, PDF, etc.) et l'envoie à l'imprimante.
+    /// </summary>
+    public Task PrintAsync(string printerName, byte[] content)
+    {
+        // NOTE : Sur Windows, pour envoyer du RAW (ZPL) directement sans passer par le driver graphique,
+        // il faut utiliser l'API Win32 "OpenPrinter", "WritePrinter" (winspool.drv).
+        // Pour ne pas surcharger ce fichier avec 200 lignes de P/Invoke, on simule l'action.
+
+        if (!OperatingSystem.IsWindows())
+        {
+            _logger.LogWarning("❌ WindowsPrinterService utilisé hors de Windows !");
+            return Task.CompletedTask;
+        }
+
+        _logger.LogInformation($"🖨️ [WINDOWS SPOOLER] Envoi de {content.Length} octets vers '{printerName}'");
+
+        // TODO (Production) : Intégrer une classe 'RawPrinterHelper' ici.
+        return Task.CompletedTask;
+    }
+
+    // --- Méthodes Internes (Logique de filtrage existante) ---
+
+    public List<LocalPrinter> GetAvailablePrintersObjects()
     {
         var results = new List<LocalPrinter>();
 
-        // 1. Récupérer toutes les imprimantes installées sur Windows
-        // (Attention : Sur Linux/Docker, cette liste sera vide ou nécessitera une autre lib comme CUPS)
         if (!OperatingSystem.IsWindows())
         {
-            _logger.LogWarning("La détection d'imprimantes n'est supportée que sur Windows pour l'instant.");
             return results;
         }
 
-        var installedPrinters = PrinterSettings.InstalledPrinters.Cast<string>().ToList();
-
-        foreach (var printerName in installedPrinters)
+        try
         {
-            // 2. Vérifier les exclusions (Bloquer les imprimantes Hybrides ou Virtuelles)
-            if (IsExcluded(printerName))
+            var installedPrinters = PrinterSettings.InstalledPrinters.Cast<string>().ToList();
+
+            foreach (var printerName in installedPrinters)
             {
-                _logger.LogDebug($"🚫 Imprimante ignorée (Exclue) : {printerName}");
-                continue;
+                if (IsExcluded(printerName))
+                {
+                    continue;
+                }
+
+                string group = DetermineGroup(printerName);
+                results.Add(new LocalPrinter(printerName, group));
             }
-
-            // 3. Déterminer le groupe
-            string group = DetermineGroup(printerName);
-
-            _logger.LogInformation($"🖨️ Imprimante détectée : {printerName} [{group}]");
-            results.Add(new LocalPrinter(printerName, group));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erreur lors de la récupération des imprimantes Windows.");
         }
 
         return results;
@@ -53,22 +89,20 @@ public class WindowsPrinterService
 
     private bool IsExcluded(string name)
     {
-        // On vérifie si le nom matche l'une des regex d'exclusion
         return _options.Printers.Exclusions.Any(pattern =>
             Regex.IsMatch(name, pattern, RegexOptions.IgnoreCase));
     }
 
     private string DetermineGroup(string name)
     {
-        // On regarde si le nom matche un groupe défini
         foreach (var group in _options.Printers.Groups)
         {
             foreach (var pattern in group.Value)
             {
                 if (Regex.IsMatch(name, pattern, RegexOptions.IgnoreCase))
-                    return group.Key; // ex: "KITCHEN"
+                    return group.Key;
             }
         }
-        return "DEFAULT"; // Groupe par défaut
+        return "DEFAULT";
     }
 }

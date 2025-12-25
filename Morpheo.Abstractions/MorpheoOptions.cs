@@ -1,6 +1,5 @@
 namespace Morpheo.Abstractions;
 
-// L'énumération des rôles (nécessaire ici)
 public enum NodeRole
 {
     StandardClient,
@@ -10,28 +9,21 @@ public enum NodeRole
 
 public class MorpheoOptions
 {
-    // Constante par défaut
     public const int DEFAULT_PORT = 5555;
 
-    // Nom du nœud (ex: "PC-CAISSE-01")
     public string NodeName { get; set; } = Environment.MachineName;
-
-    // Rôle du nœud
     public NodeRole Role { get; set; } = NodeRole.StandardClient;
-
-    // Config des imprimantes
     public PrinterOptions Printers { get; } = new();
-
-    // Les capacités définies par l'utilisateur
     public List<string> Capabilities { get; set; } = new();
-
-    // Port UDP
     public int DiscoveryPort { get; set; } = DEFAULT_PORT;
-
-    // Chemin de stockage de la BDD (Optionnel, d'où le '?')
     public string? LocalStoragePath { get; set; }
 
-    // Validation de sécurité
+    // Par défaut : 3 secondes. Mais modifiable.
+    public TimeSpan DiscoveryInterval { get; set; } = TimeSpan.FromSeconds(3);
+
+    // Par défaut : false (HTTP). Si true -> HTTPS.
+    public bool UseSecureConnection { get; set; } = false;
+
     public void Validate()
     {
         if (DiscoveryPort < 1 || DiscoveryPort > 65535)
