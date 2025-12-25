@@ -18,19 +18,19 @@ public class MorpheoNode : IMorpheoNode
     private readonly MorpheoWebServer _webServer;
     private readonly IMorpheoClient _client;
     private readonly WindowsPrinterService _printerService;
-    private readonly DataSyncService _syncService; // <--- Le service de synchro
+    private readonly DataSyncService _syncService;
 
     private Task? _discoveryTask;
 
     public MorpheoNode(
         MorpheoOptions options,
         INetworkDiscovery discovery,
-        IServiceProvider serviceProvider,
+        IServiceProvider serviceProvider, // 👈 On récupère le container principal ici
         ILogger<MorpheoNode> logger,
         ILoggerFactory loggerFactory,
         IMorpheoClient client,
         WindowsPrinterService printerService,
-        DataSyncService syncService) // <--- Injection de syncService
+        DataSyncService syncService)
     {
         _options = options;
         _discovery = discovery;
@@ -40,12 +40,13 @@ public class MorpheoNode : IMorpheoNode
         _printerService = printerService;
         _syncService = syncService;
 
-        // On passe syncService au WebServer
+        // 🔧 FIX : On passe 'serviceProvider' comme 5ème argument
         _webServer = new MorpheoWebServer(
             options,
             loggerFactory.CreateLogger<MorpheoWebServer>(),
             discovery,
-            syncService
+            syncService,
+            serviceProvider // <--- C'est ici qu'on fait le lien !
         );
     }
 
@@ -53,24 +54,28 @@ public class MorpheoNode : IMorpheoNode
     {
         _logger.LogInformation($"🚀 Démarrage de Morpheo Node : {_options.NodeName}");
 
-        // 1. BDD
+        // 1. Initialisation de la BDD via le Scope principal
         try
         {
             using (var scope = _serviceProvider.CreateScope())
             {
                 var initializer = scope.ServiceProvider.GetRequiredService<DatabaseInitializer>();
+                // On récupère tous les DbContexts enregistrés pour trouver celui de Morpheo
                 var dbContext = scope.ServiceProvider.GetServices<MorpheoDbContext>().FirstOrDefault();
-                if (dbContext == null) throw new Exception("Aucun DbContext Morpheo n'a été enregistré !");
+
+                if (dbContext == null)
+                    throw new Exception("Aucun DbContext Morpheo n'a été enregistré !");
+
                 await initializer.InitializeAsync(dbContext);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogCritical(ex, "❌ Erreur BDD.");
+            _logger.LogCritical(ex, "❌ Erreur critique lors de l'initialisation BDD.");
             throw;
         }
 
-        // 2. Web Server
+        // 2. Démarrage du Web Server (qui utilisera aussi _serviceProvider pour ses scopes)
         await _webServer.StartAsync(ct);
         int myHttpPort = _webServer.LocalPort;
 
@@ -84,7 +89,7 @@ public class MorpheoNode : IMorpheoNode
                 finalCapabilities.Add($"PRINTER:{p.Group}:{p.Name}");
             }
         }
-        catch { /* Ignoré */ }
+        catch { /* Ignoré si erreur imprimante */ }
 
         var myIdentity = new PeerInfo(
             Guid.NewGuid().ToString(),
@@ -110,5 +115,5 @@ public class MorpheoNode : IMorpheoNode
 
     public INetworkDiscovery Discovery => _discovery;
     public IMorpheoClient Client => _client;
-    public DataSyncService Sync => _syncService; // <--- Exposition du service
+    public DataSyncService Sync => _syncService;
 }
