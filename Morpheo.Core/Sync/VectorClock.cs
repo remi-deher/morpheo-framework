@@ -16,9 +16,9 @@ public class VectorClock : Dictionary<string, long>
 
     public VectorClock(IDictionary<string, long> other) : base(other) { }
 
-    /// <summary>
+    
     /// Incrémente le compteur logique pour ce nœud (Moi).
-    /// </summary>
+    
     public void Increment(string nodeId)
     {
         if (!ContainsKey(nodeId))
@@ -26,10 +26,10 @@ public class VectorClock : Dictionary<string, long>
         this[nodeId]++;
     }
 
-    /// <summary>
+    
     /// Fusionne avec un vecteur reçu (prend le MAX de chaque case).
     /// Utile après une réconciliation.
-    /// </summary>
+    
     public void Merge(IDictionary<string, long> other)
     {
         foreach (var pair in other)
@@ -41,10 +41,10 @@ public class VectorClock : Dictionary<string, long>
         }
     }
 
-    /// <summary>
+    
     /// Compare "Moi" (this) avec un "Autre" (other).
     /// Retourne la relation temporelle entre les deux.
-    /// </summary>
+    
     public VectorRelation CompareTo(IDictionary<string, long> other)
     {
         bool hasGreater = false;

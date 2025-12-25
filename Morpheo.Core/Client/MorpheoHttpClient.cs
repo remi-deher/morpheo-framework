@@ -65,7 +65,7 @@ public class MorpheoHttpClient : IMorpheoClient
                 _logger.LogWarning($"⚠️ Erreur SYNC PUSH vers {target.Name}: {response.StatusCode}");
             }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             _logger.LogDebug($"Sync échouée vers {target.Name} (Normal si déconnecté)");
         }

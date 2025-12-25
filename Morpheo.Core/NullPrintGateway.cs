@@ -3,10 +3,10 @@ using Microsoft.Extensions.Logging;
 
 namespace Morpheo.Core.Printers;
 
-/// <summary>
+
 /// Implémentation par défaut qui ne fait RIEN.
 /// Évite de planter si aucune stratégie d'impression n'est définie (ex: Serveur Linux sans CUPS).
-/// </summary>
+
 public class NullPrintGateway : IPrintGateway
 {
     private readonly ILogger<NullPrintGateway> _logger;

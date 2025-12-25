@@ -18,11 +18,23 @@ public class MorpheoOptions
     public int DiscoveryPort { get; set; } = DEFAULT_PORT;
     public string? LocalStoragePath { get; set; }
 
-    // Par défaut : 3 secondes. Mais modifiable.
+    // Configuration réseau
     public TimeSpan DiscoveryInterval { get; set; } = TimeSpan.FromSeconds(3);
-
-    // Par défaut : false (HTTP). Si true -> HTTPS.
     public bool UseSecureConnection { get; set; } = false;
+
+    // --- NOUVEAUTÉS (Pour corriger l'erreur CS1061) ---
+
+    
+    /// Durée de conservation des logs de synchro avant nettoyage.
+    /// Défaut : 30 jours.
+    
+    public TimeSpan LogRetention { get; set; } = TimeSpan.FromDays(30);
+
+    
+    /// Fréquence de passage du "Garbage Collector" des logs.
+    /// Défaut : 1 heure.
+    
+    public TimeSpan CompactionInterval { get; set; } = TimeSpan.FromHours(1);
 
     public void Validate()
     {

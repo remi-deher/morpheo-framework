@@ -15,10 +15,10 @@ public class DatabaseInitializer
         _options = options;
     }
 
-    /// <summary>
+    
     /// Calcule le chemin du fichier de base de données spécifique à ce nœud.
     /// Ex: .../MorpheoData/morpheo_CAISSE_01.db
-    /// </summary>
+    
     public string GetDatabasePath()
     {
         var folder = GetDataFolder();
@@ -51,10 +51,10 @@ public class DatabaseInitializer
         }
     }
 
-    /// <summary>
+    
     /// Tente de renommer l'ancien fichier 'morpheo.db' vers le nouveau format 'morpheo_NOM.db'
     /// pour ne pas perdre les données lors de la mise à jour du framework.
-    /// </summary>
+    
     private void MigrateLegacyDatabase(string targetNewPath)
     {
         var folder = GetDataFolder();

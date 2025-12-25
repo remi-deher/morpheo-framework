@@ -1,4 +1,5 @@
 ﻿using System.Drawing.Printing;
+using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Morpheo.Abstractions;
@@ -7,6 +8,7 @@ namespace Morpheo.Core.Printers;
 
 public record LocalPrinter(string Name, string Group);
 
+[SupportedOSPlatform("windows")]
 public class WindowsPrinterService : IPrintGateway
 {
     private readonly MorpheoOptions _options;
@@ -18,10 +20,10 @@ public class WindowsPrinterService : IPrintGateway
         _logger = logger;
     }
 
-    /// <summary>
+    
     /// Implémentation de l'interface IPrintGateway.
     /// Retourne la liste des noms d'imprimantes disponibles et filtrées.
-    /// </summary>
+    
     public Task<IEnumerable<string>> GetLocalPrintersAsync()
     {
         // On réutilise la logique interne qui gère les groupes et exclusions
@@ -31,10 +33,10 @@ public class WindowsPrinterService : IPrintGateway
         return Task.FromResult(names);
     }
 
-    /// <summary>
+    
     /// Implémentation de l'interface IPrintGateway.
     /// Reçoit le contenu binaire (ZPL, PDF, etc.) et l'envoie à l'imprimante.
-    /// </summary>
+    
     public Task PrintAsync(string printerName, byte[] content)
     {
         // NOTE : Sur Windows, pour envoyer du RAW (ZPL) directement sans passer par le driver graphique,
