@@ -1,7 +1,7 @@
 ﻿<Window x:Class="Morpheo.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Morpheo POS" Height="450" Width="800"
+        Title="Morpheo POS &amp; Node Monitor" Height="650" Width="900"
         Background="#F0F2F5" FontFamily="Segoe UI">
 
     <Grid Margin="20">
@@ -9,44 +9,132 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Border Background="White" Padding="15" CornerRadius="8" Margin="0,0,0,20">
+        <Border Grid.Row="0" Background="White" Padding="15" CornerRadius="8" Margin="0,0,0,15">
             <StackPanel Orientation="Horizontal">
                 <TextBlock Text="🛒" FontSize="24" VerticalAlignment="Center" Margin="0,0,10,0"/>
                 <StackPanel>
-                    <TextBlock x:Name="TxtNodeName" Text="Loading..." FontWeight="Bold" FontSize="16"/>
-                    <TextBlock x:Name="TxtStatus" Text="Waiting for peers..." Foreground="Gray"/>
+                    <TextBlock x:Name="TxtNodeName" Text="Chargement..." FontWeight="Bold" FontSize="16"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="TxtStatus" Text="En attente..." Foreground="Gray" Margin="0,0,15,0"/>
+                        <TextBlock x:Name="LblClientCount" Text="Clients actifs : 0" Foreground="#2196F3" FontWeight="SemiBold"/>
+                    </StackPanel>
                 </StackPanel>
             </StackPanel>
         </Border>
 
-        <ListBox x:Name="LstProducts" Grid.Row="1" BorderThickness="0" Background="Transparent">
+        <ListBox x:Name="LstProducts" Grid.Row="1" BorderThickness="0" Background="Transparent" Margin="0,0,0,15">
             <ListBox.ItemTemplate>
                 <DataTemplate>
-                    <Border Background="White" Padding="10" Margin="0,0,0,8" CornerRadius="5" Width="700">
+                    <Border Background="White" Padding="10" Margin="0,0,0,8" CornerRadius="5">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/>
-                            <TextBlock Grid.Column="1" Text="{Binding Price, StringFormat={}{0:C}}" Foreground="#2E7D32" FontWeight="Bold"/>
+
+                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center"/>
+
+                            <TextBlock Grid.Column="1" Text="{Binding Price, StringFormat={}{0:C}}" 
+                                       Foreground="#2E7D32" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,20,0"/>
+
+                            <Button Grid.Column="2" Content="✏️" 
+                                    Click="BtnEditProduct_Click"
+                                    Background="#E3F2FD" Foreground="#1565C0" BorderThickness="0"
+                                    Padding="10,5" Margin="0,0,5,0" Cursor="Hand" ToolTip="Modifier">
+                                <Button.Resources>
+                                    <Style TargetType="Border">
+                                        <Setter Property="CornerRadius" Value="4"/>
+                                    </Style>
+                                </Button.Resources>
+                            </Button>
+
+                            <Button Grid.Column="3" Content="🗑️" 
+                                    Click="BtnDeleteProduct_Click"
+                                    Background="#FFEBEE" Foreground="#C62828" BorderThickness="0"
+                                    Padding="10,5" Cursor="Hand" ToolTip="Supprimer">
+                                <Button.Resources>
+                                    <Style TargetType="Border">
+                                        <Setter Property="CornerRadius" Value="4"/>
+                                    </Style>
+                                </Button.Resources>
+                            </Button>
                         </Grid>
                     </Border>
                 </DataTemplate>
             </ListBox.ItemTemplate>
         </ListBox>
 
-        <Button Grid.Row="2" Content="+ NOUVEAU PRODUIT (Sync)" 
-                Height="50" Background="#1A73E8" Foreground="White" 
-                FontSize="14" FontWeight="Bold" BorderThickness="0"
-                Click="BtnAddProduct_Click" Margin="0,20,0,0">
-            <Button.Resources>
-                <Style TargetType="Border">
-                    <Setter Property="CornerRadius" Value="8"/>
-                </Style>
-            </Button.Resources>
-        </Button>
+        <Border Grid.Row="2" Background="White" Padding="15" CornerRadius="8" Margin="0,0,0,15">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="100"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Nom du produit" Foreground="Gray" FontSize="12" Margin="2,0,0,2"/>
+                <TextBlock Grid.Row="0" Grid.Column="1" Text="Prix (€)" Foreground="Gray" FontSize="12" Margin="2,0,0,2"/>
+
+                <TextBox Grid.Row="1" Grid.Column="0" x:Name="TxtNewProductName" Text="Nouveau Produit" Padding="5" Margin="0,0,10,0"/>
+                <TextBox Grid.Row="1" Grid.Column="1" x:Name="TxtNewProductPrice" Text="0" Padding="5" Margin="0,0,10,0"/>
+
+                <Button Grid.Row="1" Grid.Column="2" x:Name="BtnSave" Content="➕ Ajouter" 
+                        Click="BtnSave_Click"
+                        Background="#1A73E8" Foreground="White" FontWeight="Bold" BorderThickness="0" Padding="15,5">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="5"/>
+                        </Style>
+                    </Button.Resources>
+                </Button>
+
+                <Button Grid.Row="1" Grid.Column="3" x:Name="BtnCancelEdit" Content="❌" 
+                        Click="BtnCancelEdit_Click" Visibility="Collapsed"
+                        Background="#E0E0E0" Foreground="Black" Margin="5,0,0,0" BorderThickness="0" Padding="10,5">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="5"/>
+                        </Style>
+                    </Button.Resources>
+                </Button>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="3" Background="#2D2D30" Padding="10" CornerRadius="8">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                <TextBlock Text="DEBUG :" Foreground="White" VerticalAlignment="Center" Margin="0,0,15,0" FontWeight="Bold"/>
+                <Button Content="Simuler Client (+)" Click="BtnSimulateClient_Click" Background="#4CAF50" Foreground="White" Margin="5" Padding="10,5" BorderThickness="0">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="4"/>
+                        </Style>
+                    </Button.Resources>
+                </Button>
+                <Button x:Name="BtnSync" Content="🔄 Synchro" Click="BtnSync_Click" Background="#2196F3" Foreground="White" Margin="5" Padding="10,5" BorderThickness="0">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="4"/>
+                        </Style>
+                    </Button.Resources>
+                </Button>
+                <Button Content="⚠️ Attaque" Click="BtnAttack_Click" Background="#F44336" Foreground="White" Margin="5" Padding="10,5" BorderThickness="0">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="4"/>
+                        </Style>
+                    </Button.Resources>
+                </Button>
+            </StackPanel>
+        </Border>
     </Grid>
 </Window>
