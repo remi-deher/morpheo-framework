@@ -2,15 +2,25 @@ namespace Morpheo.Abstractions;
 
 public interface INetworkDiscovery
 {
-    // Démarre l'écoute et l'annonce sur le réseau
+    /// <summary>
+    /// Démarre la diffusion de notre présence (Hello packets) en arrière-plan.
+    /// Ne doit pas bloquer l'exécution.
+    /// </summary>
     Task StartAdvertisingAsync(PeerInfo myInfo, CancellationToken ct);
 
-    // Événement déclenché quand un voisin est trouvé
-    event EventHandler<PeerInfo> PeerFound;
+    /// <summary>
+    /// Démarre l'écoute des paquets entrants en arrière-plan.
+    /// Ne doit pas bloquer l'exécution.
+    /// </summary>
+    Task StartListeningAsync(CancellationToken ct);
 
-    // Événement quand un voisin disparait (timeout)
+    /// <summary>
+    /// Arrête proprement la découverte et libère les sockets.
+    /// </summary>
+    void Stop();
+
+    event EventHandler<PeerInfo> PeerFound;
     event EventHandler<PeerInfo> PeerLost;
 
-    // Pour le Dashboard
     IReadOnlyList<PeerInfo> GetPeers();
 }

@@ -9,7 +9,8 @@ using Morpheo.Core.Discovery;
 using Morpheo.Core.Printers;
 using Morpheo.Core.Server;
 using Morpheo.Core.Sync;
-using Morpheo.Core.Sync.Strategies; // <--- Nécessaire pour MeshBroadcastStrategy
+using Morpheo.Core.Sync.Strategies;
+using Morpheo.Core.Security;
 
 namespace Morpheo.Core;
 
@@ -36,23 +37,22 @@ public static class MorpheoServiceExtensions
 
         // 3. Moteur de Synchronisation (Agnostique & Opt-in)
 
-        // A. Résolution de Types (Mappage Nom <-> Type C#)
+        // A. Résolution de Types
         var typeResolver = new SimpleTypeResolver();
         services.AddSingleton<IEntityTypeResolver>(typeResolver);
         services.AddSingleton(typeResolver);
 
-        // B. Moteur de Conflit (CRDT vs LWW)
+        // B. Moteur de Conflit (CRDT)
         services.AddSingleton<ConflictResolutionEngine>();
 
         // C. Stratégie de Routage (Failover)
-        // Par défaut (Convention) : On diffuse à tout le monde (Mesh).
-        // L'utilisateur peut remplacer cela par une stratégie "ServerFirst" via services.AddSingleton<ISyncRoutingStrategy>(...) APRES AddMorpheo.
+        // Par défaut : Mesh Broadcast
         services.TryAddSingleton<ISyncRoutingStrategy, MeshBroadcastStrategy>();
 
-        // D. Service Principal de Synchro
+        // D. Service Principal
         services.AddSingleton<DataSyncService>();
 
-        // E. Maintenance (Garbage Collector des Logs)
+        // E. Maintenance
         services.AddHostedService<LogCompactionService>();
 
         // 4. Base de Données
@@ -64,8 +64,13 @@ public static class MorpheoServiceExtensions
         });
         services.AddScoped<MorpheoDbContext>(provider => provider.GetRequiredService<TDbContext>());
 
-        // 5. Impression (Hardware Abstraction)
+        // 5. Impression
         services.TryAddSingleton<IPrintGateway, NullPrintGateway>();
+
+        // 6. SÉCURITÉ (Authentification des requêtes)
+        // Par défaut : AllowAll (Porte ouverte).
+        // L'utilisateur peut le surcharger avec PskHmacAuthenticator.
+        services.TryAddSingleton<IRequestAuthenticator, AllowAllAuthenticator>();
 
         return services;
     }

@@ -10,39 +10,45 @@ using Microsoft.Extensions.DependencyInjection;
 using Morpheo.Abstractions;
 using Morpheo.Core;
 using Morpheo.Core.Data;
+using Morpheo.Core.Sync; // Pour DataSyncService
 
 namespace Morpheo.App;
 
 public partial class MainWindow : Window
 {
-    private readonly MorpheoNode _node;
+    // On remplace _node par les services précis dont on a besoin
+    private readonly INetworkDiscovery _discovery;
+    private readonly DataSyncService _syncService;
 
-    // Si cette variable contient un ID, c'est qu'on est en train de modifier ce produit
     private string? _editingProductId = null;
-
-    // Pour la simulation dashboard
     private int _simulatedClientCount = 0;
 
     public ObservableCollection<Product> Products { get; set; } = new();
 
-    public MainWindow(MorpheoNode node, MorpheoOptions options)
+    // Injection directe des services via le constructeur
+    public MainWindow(
+        INetworkDiscovery discovery,
+        DataSyncService syncService,
+        MorpheoOptions options)
     {
         InitializeComponent();
-        _node = node;
+
+        _discovery = discovery;
+        _syncService = syncService;
 
         TxtNodeName.Text = options.NodeName;
         LstProducts.ItemsSource = Products;
 
         // Événements Réseau
-        _node.Discovery.PeerFound += (s, p) => Dispatcher.Invoke(UpdateStatus);
-        _node.Discovery.PeerLost += (s, p) => Dispatcher.Invoke(UpdateStatus);
-        _node.Sync.DataReceived += OnSyncDataReceived;
+        _discovery.PeerFound += (s, p) => Dispatcher.Invoke(UpdateStatus);
+        _discovery.PeerLost += (s, p) => Dispatcher.Invoke(UpdateStatus);
+        _syncService.DataReceived += OnSyncDataReceived;
 
         Loaded += async (s, e) => await LoadInitialHistory();
     }
 
     // ---------------------------------------------------------
-    // SYNCHRONISATION (CREATE / UPDATE / DELETE)
+    // SYNCHRONISATION
     // ---------------------------------------------------------
 
     private void OnSyncDataReceived(object? sender, SyncLog log)
@@ -75,7 +81,6 @@ public partial class MainWindow : Window
         }
         else if (log.Action == "UPDATE")
         {
-            // Mise à jour d'un produit existant
             var existing = Products.FirstOrDefault(x => x.Id == log.EntityId);
             if (existing != null)
             {
@@ -84,7 +89,6 @@ public partial class MainWindow : Window
                     var updated = JsonSerializer.Deserialize<Product>(log.JsonData);
                     if (updated != null)
                     {
-                        // Astuce : On remplace l'objet dans la liste pour forcer le rafraichissement visuel
                         int index = Products.IndexOf(existing);
                         Products[index] = updated;
                     }
@@ -95,10 +99,9 @@ public partial class MainWindow : Window
     }
 
     // ---------------------------------------------------------
-    // GESTION UI : AJOUT / MODIFICATION
+    // GESTION UI
     // ---------------------------------------------------------
 
-    // C'est le même bouton qui sert à Ajouter OU Sauvegarder la modif
     private async void BtnSave_Click(object sender, RoutedEventArgs e)
     {
         string name = TxtNewProductName.Text;
@@ -112,7 +115,6 @@ public partial class MainWindow : Window
 
         if (_editingProductId == null)
         {
-            // === MODE CRÉATION ===
             var p = new Product
             {
                 Id = Guid.NewGuid().ToString(),
@@ -120,19 +122,16 @@ public partial class MainWindow : Window
                 Price = price
             };
 
-            Products.Add(p); // Local
+            Products.Add(p);
             LstProducts.ScrollIntoView(p);
-            await _node.Sync.BroadcastChangeAsync(p, "CREATE"); // Réseau
+            // Utilisation du service injecté
+            await _syncService.BroadcastChangeAsync(p, "CREATE");
         }
         else
         {
-            // === MODE MODIFICATION ===
             var existing = Products.FirstOrDefault(p => p.Id == _editingProductId);
             if (existing != null)
             {
-                // On met à jour l'objet local
-                // Note : Pour que l'UI se mette à jour, on crée un nouvel objet ou on implémente INotifyPropertyChanged.
-                // Ici on va remplacer l'objet dans la liste pour faire simple.
                 var updated = new Product
                 {
                     Id = existing.Id,
@@ -141,16 +140,14 @@ public partial class MainWindow : Window
                 };
 
                 int index = Products.IndexOf(existing);
-                Products[index] = updated; // Update Local Visuel
+                Products[index] = updated;
 
-                await _node.Sync.BroadcastChangeAsync(updated, "UPDATE"); // Réseau
+                // Utilisation du service injecté
+                await _syncService.BroadcastChangeAsync(updated, "UPDATE");
             }
-
-            // On quitte le mode édition
             StopEditing();
         }
 
-        // Reset du formulaire
         if (_editingProductId == null)
         {
             TxtNewProductName.Text = "Nouveau Produit";
@@ -158,29 +155,20 @@ public partial class MainWindow : Window
         }
     }
 
-    // Bouton Crayon (Dans la liste)
     private void BtnEditProduct_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button btn && btn.DataContext is Product productToEdit)
         {
-            // 1. On remplit le formulaire avec les infos
             TxtNewProductName.Text = productToEdit.Name;
             TxtNewProductPrice.Text = productToEdit.Price.ToString();
-
-            // 2. On stocke l'ID
             _editingProductId = productToEdit.Id;
-
-            // 3. On change l'aspect visuel pour dire "On est en train de modifier"
             BtnSave.Content = "💾 Enregistrer";
             BtnSave.Background = System.Windows.Media.Brushes.Orange;
             BtnCancelEdit.Visibility = Visibility.Visible;
-
-            // Focus sur le champ nom pour taper direct
             TxtNewProductName.Focus();
         }
     }
 
-    // Bouton Annuler (Croix)
     private void BtnCancelEdit_Click(object sender, RoutedEventArgs e)
     {
         StopEditing();
@@ -192,7 +180,6 @@ public partial class MainWindow : Window
         BtnSave.Content = "➕ Ajouter";
         BtnSave.Background = (System.Windows.Media.Brush)new System.Windows.Media.BrushConverter().ConvertFrom("#1A73E8")!;
         BtnCancelEdit.Visibility = Visibility.Collapsed;
-
         TxtNewProductName.Text = "Nouveau Produit";
         TxtNewProductPrice.Text = "0";
     }
@@ -201,29 +188,23 @@ public partial class MainWindow : Window
     {
         if (sender is Button btn && btn.DataContext is Product productToDelete)
         {
-            // Si on supprime celui qu'on est en train de modifier, on annule l'édition
             if (_editingProductId == productToDelete.Id) StopEditing();
-
             Products.Remove(productToDelete);
-            await _node.Sync.BroadcastChangeAsync(productToDelete, "DELETE");
+            await _syncService.BroadcastChangeAsync(productToDelete, "DELETE");
         }
     }
 
-    // ---------------------------------------------------------
-    // RESTE DU CODE (Similaire à avant)
-    // ---------------------------------------------------------
     private async Task LoadInitialHistory()
     {
         using var scope = App.AppHost!.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        // Simplifié : on recharge les CREATE
         var logs = await db.SyncLogs.Where(l => l.EntityName == "Product" && l.Action == "CREATE").ToListAsync();
         foreach (var log in logs) ProcessLog(log);
     }
 
     private void UpdateStatus()
     {
-        int count = _node.Discovery.GetPeers().Count;
+        int count = _discovery.GetPeers().Count;
         TxtStatus.Text = $"{count} voisin(s)";
         TxtStatus.Foreground = count > 0 ? System.Windows.Media.Brushes.Green : System.Windows.Media.Brushes.Gray;
     }
