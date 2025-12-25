@@ -3,7 +3,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Morpheo.Abstractions;
 using Morpheo.Core;
-using Morpheo.Core.Data; // Nécessaire pour MorpheoEntity
+using Morpheo.Core.Data;
+using Morpheo.Core.Sync; // Pour DataSyncService
 using Morpheo.TestHost;
 
 // Titre de la fenêtre
@@ -23,7 +24,7 @@ builder.Services.AddMorpheo<TestDbContext>(options =>
     options.Role = NodeRole.StandardClient;
     options.DiscoveryPort = 5555;
 
-    // Config imprimantes (Pour rappel)
+    // Config imprimantes
     options.Printers
         .Exclude("Microsoft.*")
         .Exclude("Fax")
@@ -31,15 +32,21 @@ builder.Services.AddMorpheo<TestDbContext>(options =>
 });
 
 var host = builder.Build();
+
+// CORRECTION 1 : On récupère les services individuellement via l'injection
 var node = host.Services.GetRequiredService<MorpheoNode>();
+var discovery = host.Services.GetRequiredService<INetworkDiscovery>();
+var sync = host.Services.GetRequiredService<DataSyncService>();
+var client = host.Services.GetRequiredService<IMorpheoClient>();
 
 Console.WriteLine("--- DÉMARRAGE DU TEST ---");
-await node.StartAsync();
+// CORRECTION 2 : On passe un CancellationToken
+await node.StartAsync(CancellationToken.None);
 
-// Gestion des voisins pour l'affichage
+// Gestion des voisins pour l'affichage (via le service Discovery injecté)
 var neighbors = new List<PeerInfo>();
-node.Discovery.PeerFound += (s, peer) => { if (!neighbors.Any(n => n.Id == peer.Id)) neighbors.Add(peer); };
-node.Discovery.PeerLost += (s, peer) => { neighbors.RemoveAll(n => n.Id == peer.Id); };
+discovery.PeerFound += (s, peer) => { if (!neighbors.Any(n => n.Id == peer.Id)) neighbors.Add(peer); };
+discovery.PeerLost += (s, peer) => { neighbors.RemoveAll(n => n.Id == peer.Id); };
 
 Console.WriteLine("-------------------------------------------------");
 Console.WriteLine(" [P] 'P' -> Test d'IMPRESSION (Hardware)");
@@ -63,14 +70,14 @@ while (true)
             {
                 var target = neighbors.First();
                 Console.WriteLine($"\n📤 Envoi impression vers {target.Name}...");
-                await node.Client.SendPrintJobAsync(target, "Ticket #1234 : 1x Café");
+                // Utilisation du client injecté
+                await client.SendPrintJobAsync(target, "Ticket #1234 : 1x Café");
             }
         }
 
-        // --- TEST SYNCHRO (NOUVEAU) ---
+        // --- TEST SYNCHRO ---
         if (key == ConsoleKey.S)
         {
-            // 1. On simule la création d'un produit
             var newProduct = new Product
             {
                 Id = Guid.NewGuid().ToString(),
@@ -79,16 +86,15 @@ while (true)
             };
 
             Console.WriteLine($"\n🔄 Création locale de : {newProduct.Name}");
-
-            // 2. On demande à Morpheo de propager l'info
-            // "J'ai créé (CREATE) ce produit, dis-le à tout le monde !"
-            await node.Sync.BroadcastChangeAsync(newProduct, "CREATE");
+            // Utilisation du service Sync injecté
+            await sync.BroadcastChangeAsync(newProduct, "CREATE");
         }
     }
     await Task.Delay(100);
 }
 
-await node.StopAsync();
+// CORRECTION 3 : Stop avec CancellationToken
+await node.StopAsync(CancellationToken.None);
 
 // --- Entité fictive pour le test ---
 public class Product : MorpheoEntity

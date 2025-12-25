@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Builder;
+﻿using System.Text.Json;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -7,9 +8,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Morpheo.Abstractions;
 using Morpheo.Core.Data;
+using Morpheo.Core.Security; // Nécessaire pour l'authentificateur
 using Morpheo.Core.Sync;
-using System.Text;
-using System.Text.Json; // ⚠️ Nécessaire pour JsonSerializer
 
 namespace Morpheo.Core.Server;
 
@@ -21,6 +21,9 @@ public class MorpheoWebServer
     private readonly DataSyncService _syncService;
     private readonly IServiceProvider _mainServiceProvider;
 
+    // Le "Videur" (Injecté via l'interface)
+    private readonly IRequestAuthenticator _authenticator;
+
     private WebApplication? _app;
     public int LocalPort { get; private set; }
 
@@ -29,13 +32,15 @@ public class MorpheoWebServer
         ILogger<MorpheoWebServer> logger,
         INetworkDiscovery discovery,
         DataSyncService syncService,
-        IServiceProvider mainServiceProvider)
+        IServiceProvider mainServiceProvider,
+        IRequestAuthenticator authenticator) // <--- INJECTION
     {
         _options = options;
         _logger = logger;
         _discovery = discovery;
         _syncService = syncService;
         _mainServiceProvider = mainServiceProvider;
+        _authenticator = authenticator;
     }
 
     public async Task StartAsync(CancellationToken ct)
@@ -45,6 +50,28 @@ public class MorpheoWebServer
         builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(0));
 
         _app = builder.Build();
+
+        // --- MIDDLEWARE DE SÉCURITÉ (Agnostique) ---
+        // C'est ici qu'on vérifie l'identité avant de traiter la requête.
+        _app.Use(async (context, next) =>
+        {
+            // On protège uniquement les API critiques (Sync, Print).
+            // On laisse passer /morpheo/dashboard ou /api/ping si besoin.
+            if (context.Request.Path.StartsWithSegments("/api"))
+            {
+                // On délègue la décision à l'authentificateur injecté (AllowAll ou HMAC)
+                if (!await _authenticator.IsAuthorizedAsync(context))
+                {
+                    context.Response.StatusCode = 401; // Unauthorized
+                    await context.Response.WriteAsync("⛔ Access Denied: Authentication Failed");
+                    _logger.LogWarning($"⛔ Rejet connexion non autorisée depuis {context.Connection.RemoteIpAddress}");
+                    return;
+                }
+            }
+            await next();
+        });
+
+        // --- ROUTES API ---
 
         _app.MapGet("/api/ping", () => Results.Ok($"Pong from {_options.NodeName}"));
 
@@ -71,15 +98,15 @@ public class MorpheoWebServer
 
             try
             {
-                // 1. On récupère les données brutes de la BDD (Entités SyncLog)
+                // 1. Récupération BDD
                 var logs = await db.SyncLogs
                     .AsNoTracking()
                     .Where(l => l.Timestamp > since)
                     .OrderBy(l => l.Timestamp)
                     .Take(500)
-                    .ToListAsync(); // ⚠️ On exécute la requête ici
+                    .ToListAsync();
 
-                // 2. On transforme en DTO en mémoire (pour pouvoir désérialiser le JSON du vecteur)
+                // 2. Conversion DTO
                 var dtos = logs.Select(l => new SyncLogDto(
                     l.Id,
                     l.EntityId,
@@ -87,11 +114,10 @@ public class MorpheoWebServer
                     l.JsonData,
                     l.Action,
                     l.Timestamp,
-                    // Conversion du JSON stocké en BDD vers le Dictionnaire du DTO
                     string.IsNullOrEmpty(l.VectorClockJson)
                         ? new Dictionary<string, long>()
                         : JsonSerializer.Deserialize<Dictionary<string, long>>(l.VectorClockJson, (JsonSerializerOptions?)null) ?? new Dictionary<string, long>(),
-                    "" // OriginNodeId (à remplir plus tard si besoin)
+                    _options.NodeName
                 ));
 
                 return Results.Ok(dtos);
@@ -103,7 +129,14 @@ public class MorpheoWebServer
             }
         });
 
-        _app.MapGet("/morpheo/dashboard", () => Results.Content("<h1>Dashboard</h1>", "text/html"));
+        // Route Impression (Optionnelle, utilise PrintGateway)
+        _app.MapPost("/api/print", async (HttpContext ctx, [FromServices] IPrintGateway printer) =>
+        {
+            // TODO: Désérialiser la demande d'impression
+            return Results.Ok();
+        });
+
+        _app.MapGet("/morpheo/dashboard", () => Results.Content("<h1>Morpheo Node Dashboard</h1>", "text/html"));
 
         await _app.StartAsync(ct);
         LocalPort = _app.Urls.Select(u => new Uri(u).Port).FirstOrDefault();

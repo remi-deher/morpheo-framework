@@ -13,7 +13,11 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
     private UdpClient? _udpClient;
     private CancellationTokenSource? _cts;
 
-    // Stockage des pairs avec leur date de dernière vue pour le nettoyage (Timeout)
+    // Tâches de fond pour garder une trace
+    private Task? _receiveTask;
+    private Task? _broadcastTask;
+    private Task? _cleanupTask;
+
     private readonly ConcurrentDictionary<string, (PeerInfo Info, DateTime LastSeen)> _peers = new();
 
     public event EventHandler<PeerInfo>? PeerFound;
@@ -25,95 +29,123 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
         _logger = logger;
     }
 
-    // Retourne la liste actuelle des voisins (utilisé par le Dashboard ou le Routing)
     public IReadOnlyList<PeerInfo> GetPeers()
     {
         return _peers.Values.Select(x => x.Info).ToList();
     }
 
-    public async Task StartAdvertisingAsync(PeerInfo myInfo, CancellationToken ct)
+    // Initialisation unique du Socket
+    private void EnsureSocketInitialized()
     {
-        _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (_udpClient != null) return;
 
-        try
-        {
-            _udpClient = new UdpClient();
-            // Permet à plusieurs instances de tourner sur la même machine (utile pour les tests)
-            _udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            _udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, _options.DiscoveryPort));
-            _udpClient.EnableBroadcast = true;
+        _udpClient = new UdpClient();
+        _udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+        _udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, _options.DiscoveryPort));
+        _udpClient.EnableBroadcast = true;
 
-            _logger.LogInformation($"📡 Discovery actif sur le port {_options.DiscoveryPort}");
+        _cts = new CancellationTokenSource();
 
-            var tasks = new List<Task>
-            {
-                ReceiveLoopAsync(_cts.Token),
-                BroadcastLoopAsync(myInfo, _cts.Token),
-                CleanupLoopAsync(_cts.Token)
-            };
+        _logger.LogInformation($"📡 Socket UDP ouvert sur le port {_options.DiscoveryPort}");
+    }
 
-            await Task.WhenAll(tasks);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Erreur critique dans le service Discovery");
-            throw; // Mieux vaut crasher au démarrage que de tourner sans réseau
-        }
+    public Task StartAdvertisingAsync(PeerInfo myInfo, CancellationToken ct)
+    {
+        EnsureSocketInitialized();
+
+        // On lie le token reçu avec notre CTS interne pour pouvoir arrêter via Stop()
+        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_cts!.Token, ct);
+
+        // On lance la tâche en fond (Fire and Forget) sans l'attendre
+        _broadcastTask = BroadcastLoopAsync(myInfo, linkedCts.Token);
+
+        // On lance aussi le nettoyage ici, c'est un bon endroit
+        _cleanupTask = CleanupLoopAsync(linkedCts.Token);
+
+        return Task.CompletedTask;
+    }
+
+    public Task StartListeningAsync(CancellationToken ct)
+    {
+        EnsureSocketInitialized();
+
+        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_cts!.Token, ct);
+
+        // On lance l'écoute en fond
+        _receiveTask = ReceiveLoopAsync(linkedCts.Token);
+
+        return Task.CompletedTask;
+    }
+
+    public void Stop()
+    {
+        _logger.LogInformation("Arrêt du service Discovery...");
+        _cts?.Cancel(); // Annule toutes les boucles
+        _udpClient?.Close();
+        _udpClient?.Dispose();
+        _udpClient = null;
     }
 
     private async Task ReceiveLoopAsync(CancellationToken token)
     {
+        _logger.LogDebug("👂 Début écoute UDP");
         while (!token.IsCancellationRequested)
         {
             try
             {
-                var result = await _udpClient!.ReceiveAsync(token);
+                if (_udpClient == null) break;
+
+                // ReceiveAsync n'accepte pas de token directement avant .NET 6/7, 
+                // mais on peut utiliser WaitAsync ou juste catcher l'erreur à la fermeture.
+                var result = await _udpClient.ReceiveAsync(token);
                 var packet = DiscoveryPacket.Deserialize(result.Buffer);
 
                 if (packet == null) continue;
-                if (packet.Name == _options.NodeName) continue; // On s'ignore soi-même
+                if (packet.Name == _options.NodeName) continue;
 
                 HandleIncomingPacket(packet, result.RemoteEndPoint.Address.ToString());
             }
             catch (OperationCanceledException) { break; }
+            catch (ObjectDisposedException) { break; }
             catch (Exception ex)
             {
-                _logger.LogWarning($"Paquet malformé reçu : {ex.Message}");
+                _logger.LogWarning($"Paquet UDP ignoré : {ex.Message}");
             }
         }
     }
 
     private async Task BroadcastLoopAsync(PeerInfo myInfo, CancellationToken token)
     {
+        _logger.LogDebug("📢 Début broadcast UDP");
         var endpoint = new IPEndPoint(IPAddress.Broadcast, _options.DiscoveryPort);
 
         while (!token.IsCancellationRequested)
         {
             try
             {
+                if (_udpClient == null) break;
+
                 var packet = new DiscoveryPacket
                 {
                     Id = myInfo.Id,
                     Name = myInfo.Name,
                     Role = myInfo.Role,
-                    IpAddress = myInfo.IpAddress,
+                    IpAddress = myInfo.IpAddress, // Sera souvent "0.0.0.0", le récepteur déduira l'IP réelle
                     Port = myInfo.Port,
                     Tags = myInfo.Tags,
                     Type = DiscoveryMessageType.Hello
                 };
 
                 var data = DiscoveryPacket.Serialize(packet);
-                await _udpClient!.SendAsync(data, data.Length, endpoint);
+                await _udpClient.SendAsync(data, data.Length, endpoint);
             }
             catch (Exception ex)
             {
                 _logger.LogTrace($"Erreur Broadcast : {ex.Message}");
             }
 
-            // MODIFICATION CONFIGURABLE :
-            // On utilise l'intervalle défini dans les options (par défaut 3s)
-            // au lieu d'une valeur codée en dur.
-            await Task.Delay(_options.DiscoveryInterval, token);
+            try { await Task.Delay(_options.DiscoveryInterval, token); }
+            catch (OperationCanceledException) { break; }
         }
     }
 
@@ -122,10 +154,7 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
         while (!token.IsCancellationRequested)
         {
             var now = DateTime.UtcNow;
-
-            // On considère un nœud perdu s'il n'a pas donné signe de vie depuis 3x l'intervalle d'annonce + 1s de marge
-            // Ex: Si intervalle = 3s -> Timeout = 10s
-            var timeout = _options.DiscoveryInterval * 3 + TimeSpan.FromSeconds(1);
+            var timeout = _options.DiscoveryInterval * 3 + TimeSpan.FromSeconds(2);
 
             foreach (var peer in _peers)
             {
@@ -139,39 +168,35 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
                 }
             }
 
-            await Task.Delay(5000, token); // Vérification toutes les 5s
+            try { await Task.Delay(5000, token); }
+            catch (OperationCanceledException) { break; }
         }
     }
 
     private void HandleIncomingPacket(DiscoveryPacket packet, string realIp)
     {
-        // On reconstruit l'objet PeerInfo avec toutes les données reçues
+        // On utilise l'IP détectée par le socket (realIp) car packet.IpAddress est souvent générique
         var info = new PeerInfo(packet.Id, packet.Name, realIp, packet.Port, packet.Role, packet.Tags);
 
         if (packet.Type == DiscoveryMessageType.Bye)
         {
-            if (_peers.TryRemove(packet.Id, out _))
-            {
-                PeerLost?.Invoke(this, info);
-            }
+            if (_peers.TryRemove(packet.Id, out _)) PeerLost?.Invoke(this, info);
             return;
         }
 
         bool isNew = !_peers.ContainsKey(packet.Id);
-
-        // Mise à jour du timestamp (Heartbeat)
         _peers[packet.Id] = (info, DateTime.UtcNow);
 
         if (isNew)
         {
-            _logger.LogInformation($"✨ Voisin trouvé : {info.Name} ({info.IpAddress})");
+            _logger.LogInformation($"✨ Voisin trouvé : {info.Name} @ {realIp}:{info.Port}");
             PeerFound?.Invoke(this, info);
         }
     }
 
     public void Dispose()
     {
-        _cts?.Cancel();
-        _udpClient?.Dispose();
+        Stop();
+        _cts?.Dispose();
     }
 }

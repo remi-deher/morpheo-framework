@@ -10,4 +10,8 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\Morpheo.Abstractions\Morpheo.Abstractions.csproj" />
+  </ItemGroup>
+
 </Project>
