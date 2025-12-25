@@ -8,6 +8,7 @@ using Morpheo.Core.Discovery;
 using Morpheo.Core.Printers;
 using Morpheo.Core.Server;
 using Morpheo.Core.Sync;
+using System.Runtime.Versioning;
 
 namespace Morpheo.Core;
 
@@ -18,52 +19,62 @@ public static class MorpheoServiceExtensions
         Action<MorpheoOptions> configure)
         where TDbContext : MorpheoDbContext
     {
-        // 1. Configuration
+        // 1. Configuration des Options
         var options = new MorpheoOptions();
         configure(options);
         options.Validate();
         services.AddSingleton(options);
 
-        // 2. Services Core (Indispensables)
+        // 2. Services Core (Infrastructure)
         services.AddSingleton<MorpheoNode>();
         services.AddSingleton<INetworkDiscovery, UdpDiscoveryService>();
         services.AddHttpClient();
         services.AddSingleton<IMorpheoClient, MorpheoHttpClient>();
         services.AddSingleton<MorpheoWebServer>();
-        services.AddSingleton<DataSyncService>();
         services.AddSingleton<DatabaseInitializer>();
 
-        // 3. Base de Données
+        // 3. Moteur de Synchronisation Agnostique (Nouveautés)
+
+        // A. Résolution de Types : Permet de mapper dynamiquement "Product" -> typeof(Product)
+        // On l'instancie ici pour pouvoir l'injecter sous deux formes :
+        var typeResolver = new SimpleTypeResolver();
+        services.AddSingleton<IEntityTypeResolver>(typeResolver); // Pour le moteur interne (Interface)
+        services.AddSingleton(typeResolver);                      // Pour l'app utilisateur (Classe concrète pour Register<T>)
+
+        // B. Moteur de Conflit : Décide entre CRDT et Last-Write-Wins
+        services.AddSingleton<ConflictResolutionEngine>();
+
+        // C. Service de Synchro (Consomme le moteur de conflit)
+        services.AddSingleton<DataSyncService>();
+
+        // D. Maintenance : Service d'arrière-plan pour nettoyer les vieux logs (Garbage Collector)
+        services.AddHostedService<LogCompactionService>();
+
+        // 4. Base de Données (SQLite)
         services.AddDbContext<TDbContext>((provider, dbOptions) =>
         {
             var initializer = provider.GetRequiredService<DatabaseInitializer>();
             var dbPath = initializer.GetDatabasePath();
             dbOptions.UseSqlite($"Data Source={dbPath}");
         });
+
+        // Permet d'injecter MorpheoDbContext générique même si l'app utilise AppDbContext
         services.AddScoped<MorpheoDbContext>(provider => provider.GetRequiredService<TDbContext>());
 
-        // 4. IMPRESSION : Pattern "Strategy" avec Fallback
-        // On utilise TryAddSingleton : si l'utilisateur a déjà enregistré son propre IPrintGateway 
-        // (via AddWindowsPrinting par exemple), cette ligne ne fera rien.
-        // Sinon, on met le "NullGateway" pour éviter les crashs.
+        // 5. IMPRESSION : Pattern "Strategy" avec Fallback
+        // Par défaut, on met le "NullGateway" pour éviter les crashs si aucun driver n'est dispo.
         services.TryAddSingleton<IPrintGateway, NullPrintGateway>();
 
         return services;
     }
 
-    /// <summary>
     /// Active le support de l'impression via les API Windows (System.Drawing.Printing).
-    /// À n'utiliser QUE sur Windows.
-    /// </summary>
+    /// À n'utiliser QUE sur Windows (Opt-in).
+    [SupportedOSPlatform("windows")]
     public static IServiceCollection AddWindowsPrinting(this IServiceCollection services)
     {
-        // On enregistre explicitement le service Windows comme implémentation de l'interface
-        services.AddSingleton<IPrintGateway, WindowsPrinterService>();
-        // Note : Cela écrasera le NullPrintGateway si AddMorpheo est appelé avant, 
-        // ou empêchera son ajout si appelé après (grâce à l'ordre d'injection ou au remplacement).
-        // Pour être sûr, on peut utiliser Replace :
+        // On remplace l'implémentation par défaut par celle de Windows
         services.Replace(ServiceDescriptor.Singleton<IPrintGateway, WindowsPrinterService>());
-
         return services;
     }
 }

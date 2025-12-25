@@ -2,10 +2,10 @@
 
 namespace Morpheo.Core.Data;
 
-/// <summary>
+
 /// Classe de base pour toutes les entités qui devront être synchronisées
 /// entre les nœuds (Android <-> Windows <-> Linux).
-/// </summary>
+
 public abstract class MorpheoEntity
 {
     // On utilise des GUID (String) plutôt que des int (AutoIncrement)
