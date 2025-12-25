@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions; // Pour TryAddSingleton
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using System.Runtime.Versioning;
 using Morpheo.Abstractions;
 using Morpheo.Core.Client;
 using Morpheo.Core.Data;
@@ -8,7 +9,7 @@ using Morpheo.Core.Discovery;
 using Morpheo.Core.Printers;
 using Morpheo.Core.Server;
 using Morpheo.Core.Sync;
-using System.Runtime.Versioning;
+using Morpheo.Core.Sync.Strategies; // <--- Nécessaire pour MeshBroadcastStrategy
 
 namespace Morpheo.Core;
 
@@ -19,13 +20,13 @@ public static class MorpheoServiceExtensions
         Action<MorpheoOptions> configure)
         where TDbContext : MorpheoDbContext
     {
-        // 1. Configuration des Options
+        // 1. Configuration
         var options = new MorpheoOptions();
         configure(options);
         options.Validate();
         services.AddSingleton(options);
 
-        // 2. Services Core (Infrastructure)
+        // 2. Services Core Infrastructure
         services.AddSingleton<MorpheoNode>();
         services.AddSingleton<INetworkDiscovery, UdpDiscoveryService>();
         services.AddHttpClient();
@@ -33,47 +34,48 @@ public static class MorpheoServiceExtensions
         services.AddSingleton<MorpheoWebServer>();
         services.AddSingleton<DatabaseInitializer>();
 
-        // 3. Moteur de Synchronisation Agnostique (Nouveautés)
+        // 3. Moteur de Synchronisation (Agnostique & Opt-in)
 
-        // A. Résolution de Types : Permet de mapper dynamiquement "Product" -> typeof(Product)
-        // On l'instancie ici pour pouvoir l'injecter sous deux formes :
+        // A. Résolution de Types (Mappage Nom <-> Type C#)
         var typeResolver = new SimpleTypeResolver();
-        services.AddSingleton<IEntityTypeResolver>(typeResolver); // Pour le moteur interne (Interface)
-        services.AddSingleton(typeResolver);                      // Pour l'app utilisateur (Classe concrète pour Register<T>)
+        services.AddSingleton<IEntityTypeResolver>(typeResolver);
+        services.AddSingleton(typeResolver);
 
-        // B. Moteur de Conflit : Décide entre CRDT et Last-Write-Wins
+        // B. Moteur de Conflit (CRDT vs LWW)
         services.AddSingleton<ConflictResolutionEngine>();
 
-        // C. Service de Synchro (Consomme le moteur de conflit)
+        // C. Stratégie de Routage (Failover)
+        // Par défaut (Convention) : On diffuse à tout le monde (Mesh).
+        // L'utilisateur peut remplacer cela par une stratégie "ServerFirst" via services.AddSingleton<ISyncRoutingStrategy>(...) APRES AddMorpheo.
+        services.TryAddSingleton<ISyncRoutingStrategy, MeshBroadcastStrategy>();
+
+        // D. Service Principal de Synchro
         services.AddSingleton<DataSyncService>();
 
-        // D. Maintenance : Service d'arrière-plan pour nettoyer les vieux logs (Garbage Collector)
+        // E. Maintenance (Garbage Collector des Logs)
         services.AddHostedService<LogCompactionService>();
 
-        // 4. Base de Données (SQLite)
+        // 4. Base de Données
         services.AddDbContext<TDbContext>((provider, dbOptions) =>
         {
             var initializer = provider.GetRequiredService<DatabaseInitializer>();
             var dbPath = initializer.GetDatabasePath();
             dbOptions.UseSqlite($"Data Source={dbPath}");
         });
-
-        // Permet d'injecter MorpheoDbContext générique même si l'app utilise AppDbContext
         services.AddScoped<MorpheoDbContext>(provider => provider.GetRequiredService<TDbContext>());
 
-        // 5. IMPRESSION : Pattern "Strategy" avec Fallback
-        // Par défaut, on met le "NullGateway" pour éviter les crashs si aucun driver n'est dispo.
+        // 5. Impression (Hardware Abstraction)
         services.TryAddSingleton<IPrintGateway, NullPrintGateway>();
 
         return services;
     }
 
-    /// Active le support de l'impression via les API Windows (System.Drawing.Printing).
-    /// À n'utiliser QUE sur Windows (Opt-in).
+    /// <summary>
+    /// Active le support de l'impression via les API Windows.
+    /// </summary>
     [SupportedOSPlatform("windows")]
     public static IServiceCollection AddWindowsPrinting(this IServiceCollection services)
     {
-        // On remplace l'implémentation par défaut par celle de Windows
         services.Replace(ServiceDescriptor.Singleton<IPrintGateway, WindowsPrinterService>());
         return services;
     }

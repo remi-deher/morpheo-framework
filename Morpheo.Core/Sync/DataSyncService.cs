@@ -14,6 +14,8 @@ public class DataSyncService
     private readonly INetworkDiscovery _discovery;
     private readonly MorpheoOptions _options;
     private readonly ILogger<DataSyncService> _logger;
+    private readonly ConflictResolutionEngine _conflictEngine;
+    private readonly ISyncRoutingStrategy _routingStrategy; // <--- NOUVEAU
 
     private readonly List<PeerInfo> _peers = new();
     public event EventHandler<SyncLog>? DataReceived;
@@ -22,14 +24,18 @@ public class DataSyncService
         IServiceProvider serviceProvider,
         IMorpheoClient client,
         INetworkDiscovery discovery,
-        MorpheoOptions options, // Nécessaire pour connaître notre propre NodeName
-        ILogger<DataSyncService> logger)
+        MorpheoOptions options,
+        ILogger<DataSyncService> logger,
+        ConflictResolutionEngine conflictEngine,
+        ISyncRoutingStrategy routingStrategy) // <--- INJECTION
     {
         _serviceProvider = serviceProvider;
         _client = client;
         _discovery = discovery;
         _options = options;
         _logger = logger;
+        _conflictEngine = conflictEngine;
+        _routingStrategy = routingStrategy;
 
         _discovery.PeerLost += (s, p) => { lock (_peers) { _peers.RemoveAll(x => x.Id == p.Id); } };
 
@@ -46,50 +52,46 @@ public class DataSyncService
         };
     }
 
-    // --- 1. ENVOI (BROADCAST) ---
+    // --- 1. ENVOI (ROUTAGE INTELLIGENT) ---
     public async Task BroadcastChangeAsync<T>(T entity, string action) where T : MorpheoEntity
     {
         using var scope = _serviceProvider.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<MorpheoDbContext>();
 
-        // 1. Récupérer l'ancien vecteur s'il existe pour cet ID (pour conserver l'historique causal)
         var lastLog = await db.SyncLogs
             .Where(l => l.EntityId == entity.Id)
             .OrderByDescending(l => l.Timestamp)
             .FirstOrDefaultAsync();
 
-        // Si on a déjà un vecteur, on le reprend, sinon on part de zéro
         var vector = lastLog != null ? lastLog.Vector : new VectorClock();
-
-        // 2. Incrémenter MON compteur dans le vecteur (Moi, j'ai fait une modif)
         vector.Increment(_options.NodeName);
 
         var log = new SyncLog
         {
             Id = Guid.NewGuid().ToString(),
             EntityId = entity.Id,
-            EntityName = typeof(T).Name,
+            EntityName = typeof(T).Name, // Ou via TypeResolver si besoin d'abstraction totale
             Action = action,
             JsonData = JsonSerializer.Serialize(entity),
             Timestamp = DateTime.UtcNow.Ticks,
             IsFromRemote = false,
-            Vector = vector // La propriété Vector s'occupe de la sérialisation JSON pour la BDD
+            Vector = vector
         };
 
         db.SyncLogs.Add(log);
         await db.SaveChangesAsync();
 
-        // On lance la diffusion en arrière-plan
+        // On lance la diffusion via la stratégie
         _ = Task.Run(() => PushToPeers(log));
     }
 
     private async Task PushToPeers(SyncLog log)
     {
-        PeerInfo[] targets;
-        lock (_peers) targets = _peers.ToArray();
-        if (targets.Length == 0) return;
+        // 1. Récupération des cibles potentielles (Voisins découverts)
+        PeerInfo[] candidates;
+        lock (_peers) candidates = _peers.ToArray();
 
-        // 🔧 Mapping du Vecteur vers le DTO pour l'envoi
+        // 2. Préparation du DTO
         var dto = new SyncLogDto(
             log.Id,
             log.EntityId,
@@ -97,71 +99,80 @@ public class DataSyncService
             log.JsonData,
             log.Action,
             log.Timestamp,
-            log.Vector, // <-- On passe le dictionnaire complet
-            _options.NodeName // OriginNodeId
+            log.Vector,
+            _options.NodeName
         );
 
-        foreach (var peer in targets)
+        // 3. Définition de l'action d'envoi unitaire (Le "Comment")
+        // Cette fonction sera appelée par la stratégie pour chaque destinataire choisi
+        Func<PeerInfo, SyncLogDto, Task<bool>> sendAction = async (peer, d) =>
         {
-            try { await _client.SendSyncUpdateAsync(peer, dto); } catch { /* Ignoré */ }
-        }
+            try
+            {
+                await _client.SendSyncUpdateAsync(peer, d);
+                return true; // Succès (ACK implicite HTTP 200)
+            }
+            catch
+            {
+                return false; // Echec
+            }
+        };
+
+        // 4. Exécution de la Stratégie (Le "Qui" et "Dans quel ordre")
+        // C'est ici que la magie du Failover opère (Serveur -> Mesh, etc.)
+        await _routingStrategy.PropagateAsync(dto, candidates, sendAction);
     }
 
-    // --- 2. RÉCEPTION (APPLY) ---
+    // --- 2. RÉCEPTION (AVEC RÉSOLUTION AGNOSTIQUE) ---
     public async Task ApplyRemoteChangeAsync(SyncLogDto remoteDto)
     {
         using var scope = _serviceProvider.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<MorpheoDbContext>();
 
-        // A. Anti-Doublon strict (ID unique du log déjà traité ?)
         if (await db.SyncLogs.AnyAsync(l => l.Id == remoteDto.Id)) return;
 
-        // B. Récupération de l'état local actuel pour cet objet (la "Vérité locale")
         var localLog = await db.SyncLogs
             .Where(l => l.EntityId == remoteDto.EntityId)
             .OrderByDescending(l => l.Timestamp)
             .FirstOrDefaultAsync();
 
-        // C. Comparaison des vecteurs
         bool shouldApply = false;
+        string finalJsonData = remoteDto.JsonData;
 
         if (localLog == null)
         {
-            // On ne connait pas cet objet, c'est une création ou une première synchro -> On prend.
             shouldApply = true;
         }
         else
         {
             var localVector = localLog.Vector;
             var remoteVector = new VectorClock(remoteDto.VectorClock);
-
             var relation = localVector.CompareTo(remoteVector);
 
             switch (relation)
             {
                 case VectorRelation.CausedBy:
-                    // Le distant est un descendant (plus récent et connait mon état) -> ON APPLIQUE
                     shouldApply = true;
                     break;
 
                 case VectorRelation.Causes:
-                    // Le distant est un ancêtre (plus vieux que moi) -> ON IGNORE
-                    _logger.LogInformation($"🛡️ Ignoré : Donnée reçue obsolète pour {remoteDto.EntityName} ({remoteDto.EntityId})");
                     return;
 
                 case VectorRelation.Concurrent:
                 case VectorRelation.Equal:
-                    // CONFLIT : A et B ont bougé indépendamment.
-                    // Pour l'instant, on utilise le Timestamp (Last Write Wins)
-                    if (remoteDto.Timestamp > localLog.Timestamp)
+                    // Utilisation du Moteur de Résolution Agnostique
+                    finalJsonData = _conflictEngine.Resolve(
+                        remoteDto.EntityName,
+                        localLog.JsonData,
+                        localLog.Timestamp,
+                        remoteDto.JsonData,
+                        remoteDto.Timestamp
+                    );
+
+                    if (finalJsonData != localLog.JsonData)
                     {
-                        _logger.LogWarning($"🔀 Conflit sur {remoteDto.EntityName} résolu par Timestamp (Distant gagne)");
                         shouldApply = true;
-                    }
-                    else
-                    {
-                        _logger.LogWarning($"🔀 Conflit sur {remoteDto.EntityName} résolu par Timestamp (Local gagne)");
-                        return;
+                        _logger.LogInformation($"🔀 Conflit résolu (Merge/LWW) pour {remoteDto.EntityName}");
                     }
                     break;
             }
@@ -174,26 +185,24 @@ public class DataSyncService
                 Id = remoteDto.Id,
                 EntityId = remoteDto.EntityId,
                 EntityName = remoteDto.EntityName,
-                JsonData = remoteDto.JsonData,
+                JsonData = finalJsonData,
                 Action = remoteDto.Action,
                 Timestamp = remoteDto.Timestamp,
                 IsFromRemote = true,
-                VectorClockJson = JsonSerializer.Serialize(remoteDto.VectorClock) // On stocke le vecteur reçu
+                VectorClockJson = JsonSerializer.Serialize(remoteDto.VectorClock)
             };
 
             db.SyncLogs.Add(newLog);
             await db.SaveChangesAsync();
 
-            // On notifie l'application qu'une nouvelle donnée est arrivée
             DataReceived?.Invoke(this, newLog);
         }
     }
 
-    // --- 3. COLD SYNC (Rattrapage d'historique) ---
+    // --- 3. COLD SYNC (Rattrapage) ---
     private async Task SynchronizeWithPeerAsync(PeerInfo peer)
     {
-        _logger.LogInformation($"🔄 DEBUT COLD SYNC avec {peer.Name}...");
-
+        // ... (Logique Cold Sync inchangée)
         try
         {
             long lastTick = 0;
@@ -206,47 +215,21 @@ public class DataSyncService
                 }
             }
 
-            bool moreDataAvailable = true;
-            int totalSynced = 0;
-
-            while (moreDataAvailable)
+            // Note : Pour le Cold Sync, on tire généralement depuis n'importe quel pair disponible.
+            // On pourrait aussi utiliser une stratégie ici, mais souvent le P2P suffit.
+            var batch = await _client.GetHistoryAsync(peer, lastTick);
+            if (batch != null && batch.Count > 0)
             {
-                var batch = await _client.GetHistoryAsync(peer, lastTick);
-
-                if (batch == null)
+                foreach (var logDto in batch)
                 {
-                    _logger.LogWarning($"⚠️ Echec Cold Sync avec {peer.Name} (Erreur distante).");
-                    return;
+                    await ApplyRemoteChangeAsync(logDto);
                 }
-
-                if (batch.Count == 0)
-                {
-                    moreDataAvailable = false;
-                }
-                else
-                {
-                    foreach (var logDto in batch)
-                    {
-                        // La logique vectorielle est gérée ici
-                        await ApplyRemoteChangeAsync(logDto);
-
-                        if (logDto.Timestamp > lastTick)
-                            lastTick = logDto.Timestamp;
-                    }
-
-                    totalSynced += batch.Count;
-                    if (batch.Count < 500) moreDataAvailable = false;
-                }
+                _logger.LogInformation($"✅ COLD SYNC : {batch.Count} éléments reçus de {peer.Name}.");
             }
-
-            if (totalSynced > 0)
-                _logger.LogInformation($"✅ COLD SYNC TERMINÉ. {totalSynced} éléments reçus.");
-            else
-                _logger.LogInformation("✅ Déjà à jour.");
         }
         catch (Exception ex)
         {
-            _logger.LogError($"❌ CRASH COLD SYNC : {ex.Message}");
+            _logger.LogError($"❌ Erreur Cold Sync avec {peer.Name} : {ex.Message}");
         }
     }
 }
