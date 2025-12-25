@@ -3,7 +3,6 @@ using Microsoft.Extensions.Logging;
 using Morpheo.Abstractions;
 using Morpheo.Core.Client;
 using Morpheo.Core.Data;
-using Morpheo.Core.Printers;
 using Morpheo.Core.Server;
 using Morpheo.Core.Sync;
 
@@ -17,7 +16,10 @@ public class MorpheoNode : IMorpheoNode
     private readonly ILogger<MorpheoNode> _logger;
     private readonly MorpheoWebServer _webServer;
     private readonly IMorpheoClient _client;
-    private readonly WindowsPrinterService _printerService;
+
+    // On stocke l'interface, pas la classe concrète
+    private readonly IPrintGateway _printGateway;
+
     private readonly DataSyncService _syncService;
 
     private Task? _discoveryTask;
@@ -25,11 +27,15 @@ public class MorpheoNode : IMorpheoNode
     public MorpheoNode(
         MorpheoOptions options,
         INetworkDiscovery discovery,
-        IServiceProvider serviceProvider, // 👈 On récupère le container principal
+        IServiceProvider serviceProvider,
         ILogger<MorpheoNode> logger,
         ILoggerFactory loggerFactory,
         IMorpheoClient client,
-        WindowsPrinterService printerService,
+
+        // On injecte l'interface (Abstraction)
+        // Que ce soit NullPrintGateway (Linux par défaut) ou WindowsPrinterService (Windows)
+        IPrintGateway printGateway,
+
         DataSyncService syncService)
     {
         _options = options;
@@ -37,17 +43,18 @@ public class MorpheoNode : IMorpheoNode
         _serviceProvider = serviceProvider;
         _logger = logger;
         _client = client;
-        _printerService = printerService;
+
+        // Assignation
+        _printGateway = printGateway;
+
         _syncService = syncService;
 
-        // ✅ C'est le bon endroit pour créer le WebServer
-        // On passe 'serviceProvider' pour qu'il puisse accéder à la BDD principale
         _webServer = new MorpheoWebServer(
             options,
             loggerFactory.CreateLogger<MorpheoWebServer>(),
             discovery,
             syncService,
-            serviceProvider // <--- LA CLEF DU FIX 500
+            serviceProvider
         );
     }
 
@@ -74,6 +81,9 @@ public class MorpheoNode : IMorpheoNode
         _discovery.PeerFound += (s, p) => _logger.LogInformation($"✨ Voisin : {p.Name}");
         _discoveryTask = _discovery.StartAdvertisingAsync(identity, ct);
 
+        // (Optionnel) Log pour confirmer quel moteur d'impression est chargé
+        _logger.LogInformation($"🖨️ Moteur d'impression chargé : {_printGateway.GetType().Name}");
+
         _logger.LogInformation("✅ Node Prêt.");
     }
 
@@ -85,4 +95,7 @@ public class MorpheoNode : IMorpheoNode
     public INetworkDiscovery Discovery => _discovery;
     public IMorpheoClient Client => _client;
     public DataSyncService Sync => _syncService;
+
+    // Si vous aviez besoin d'exposer le service d'impression publiquement :
+    public IPrintGateway Printer => _printGateway;
 }

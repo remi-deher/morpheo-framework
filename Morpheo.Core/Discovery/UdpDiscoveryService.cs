@@ -13,8 +13,7 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
     private UdpClient? _udpClient;
     private CancellationTokenSource? _cts;
 
-    // MODIFICATION MAJEURE : On stocke l'info complète du pair + la date de dernière vue
-    // Cela permet au Dashboard d'afficher les noms et les tags des voisins
+    // Stockage des pairs avec leur date de dernière vue pour le nettoyage (Timeout)
     private readonly ConcurrentDictionary<string, (PeerInfo Info, DateTime LastSeen)> _peers = new();
 
     public event EventHandler<PeerInfo>? PeerFound;
@@ -26,7 +25,7 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
         _logger = logger;
     }
 
-    // Implémentation de la méthode requise par le Dashboard
+    // Retourne la liste actuelle des voisins (utilisé par le Dashboard ou le Routing)
     public IReadOnlyList<PeerInfo> GetPeers()
     {
         return _peers.Values.Select(x => x.Info).ToList();
@@ -39,6 +38,7 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
         try
         {
             _udpClient = new UdpClient();
+            // Permet à plusieurs instances de tourner sur la même machine (utile pour les tests)
             _udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             _udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, _options.DiscoveryPort));
             _udpClient.EnableBroadcast = true;
@@ -57,7 +57,7 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Erreur critique dans le service Discovery");
-            throw;
+            throw; // Mieux vaut crasher au démarrage que de tourner sans réseau
         }
     }
 
@@ -98,7 +98,7 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
                     Role = myInfo.Role,
                     IpAddress = myInfo.IpAddress,
                     Port = myInfo.Port,
-                    Tags = myInfo.Tags, // <--- IMPORTANT : On diffuse nos capacités
+                    Tags = myInfo.Tags,
                     Type = DiscoveryMessageType.Hello
                 };
 
@@ -110,7 +110,10 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
                 _logger.LogTrace($"Erreur Broadcast : {ex.Message}");
             }
 
-            await Task.Delay(3000, token); // Hello toutes les 3 secondes
+            // MODIFICATION CONFIGURABLE :
+            // On utilise l'intervalle défini dans les options (par défaut 3s)
+            // au lieu d'une valeur codée en dur.
+            await Task.Delay(_options.DiscoveryInterval, token);
         }
     }
 
@@ -119,7 +122,10 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
         while (!token.IsCancellationRequested)
         {
             var now = DateTime.UtcNow;
-            var timeout = TimeSpan.FromSeconds(10); // Timeout après 10s sans nouvelles
+
+            // On considère un nœud perdu s'il n'a pas donné signe de vie depuis 3x l'intervalle d'annonce + 1s de marge
+            // Ex: Si intervalle = 3s -> Timeout = 10s
+            var timeout = _options.DiscoveryInterval * 3 + TimeSpan.FromSeconds(1);
 
             foreach (var peer in _peers)
             {
@@ -127,18 +133,19 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
                 {
                     if (_peers.TryRemove(peer.Key, out var removed))
                     {
+                        _logger.LogInformation($"❌ Voisin perdu (Timeout) : {removed.Info.Name}");
                         PeerLost?.Invoke(this, removed.Info);
                     }
                 }
             }
 
-            await Task.Delay(5000, token);
+            await Task.Delay(5000, token); // Vérification toutes les 5s
         }
     }
 
     private void HandleIncomingPacket(DiscoveryPacket packet, string realIp)
     {
-        // On reconstruit l'objet PeerInfo avec toutes les données reçues (Tags inclus)
+        // On reconstruit l'objet PeerInfo avec toutes les données reçues
         var info = new PeerInfo(packet.Id, packet.Name, realIp, packet.Port, packet.Role, packet.Tags);
 
         if (packet.Type == DiscoveryMessageType.Bye)
@@ -152,11 +159,12 @@ public class UdpDiscoveryService : INetworkDiscovery, IDisposable
 
         bool isNew = !_peers.ContainsKey(packet.Id);
 
-        // On met à jour ou on ajoute le pair
+        // Mise à jour du timestamp (Heartbeat)
         _peers[packet.Id] = (info, DateTime.UtcNow);
 
         if (isNew)
         {
+            _logger.LogInformation($"✨ Voisin trouvé : {info.Name} ({info.IpAddress})");
             PeerFound?.Invoke(this, info);
         }
     }

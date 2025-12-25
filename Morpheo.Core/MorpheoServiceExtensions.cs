@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions; // Pour TryAddSingleton
 using Morpheo.Abstractions;
 using Morpheo.Core.Client;
 using Morpheo.Core.Data;
@@ -23,35 +24,45 @@ public static class MorpheoServiceExtensions
         options.Validate();
         services.AddSingleton(options);
 
-        // 2. Services Core
+        // 2. Services Core (Indispensables)
         services.AddSingleton<MorpheoNode>();
         services.AddSingleton<INetworkDiscovery, UdpDiscoveryService>();
-
-        // 3. Client & Serveur
         services.AddHttpClient();
         services.AddSingleton<IMorpheoClient, MorpheoHttpClient>();
-
-        // IMPORTANT : On enregistre le WebServer pour qu'il soit injectable si besoin
         services.AddSingleton<MorpheoWebServer>();
-
-        // 4. Imprimantes
-        services.AddSingleton<WindowsPrinterService>();
-
-        // 5. Synchro
         services.AddSingleton<DataSyncService>();
-
-        // 6. Base de Données
         services.AddSingleton<DatabaseInitializer>();
 
+        // 3. Base de Données
         services.AddDbContext<TDbContext>((provider, dbOptions) =>
         {
             var initializer = provider.GetRequiredService<DatabaseInitializer>();
             var dbPath = initializer.GetDatabasePath();
             dbOptions.UseSqlite($"Data Source={dbPath}");
         });
-
-        // Alias pour MorpheoDbContext
         services.AddScoped<MorpheoDbContext>(provider => provider.GetRequiredService<TDbContext>());
+
+        // 4. IMPRESSION : Pattern "Strategy" avec Fallback
+        // On utilise TryAddSingleton : si l'utilisateur a déjà enregistré son propre IPrintGateway 
+        // (via AddWindowsPrinting par exemple), cette ligne ne fera rien.
+        // Sinon, on met le "NullGateway" pour éviter les crashs.
+        services.TryAddSingleton<IPrintGateway, NullPrintGateway>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Active le support de l'impression via les API Windows (System.Drawing.Printing).
+    /// À n'utiliser QUE sur Windows.
+    /// </summary>
+    public static IServiceCollection AddWindowsPrinting(this IServiceCollection services)
+    {
+        // On enregistre explicitement le service Windows comme implémentation de l'interface
+        services.AddSingleton<IPrintGateway, WindowsPrinterService>();
+        // Note : Cela écrasera le NullPrintGateway si AddMorpheo est appelé avant, 
+        // ou empêchera son ajout si appelé après (grâce à l'ordre d'injection ou au remplacement).
+        // Pour être sûr, on peut utiliser Replace :
+        services.Replace(ServiceDescriptor.Singleton<IPrintGateway, WindowsPrinterService>());
 
         return services;
     }
